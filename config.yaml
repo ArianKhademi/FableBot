@@ -1,0 +1,76 @@
+account:
+  starting_equity: 100000.0
+  # Hard per-trade risk budget: every trade risks exactly this fraction of
+  # equity. The stop is priced so hitting it loses this much, no exceptions.
+  risk_per_trade: 0.01
+
+schedule:
+  timezone: "America/New_York"
+  morning_report: "07:00"
+  evening_report: "21:00"
+  poll_interval_minutes: 5
+
+correlation:
+  # If max_same_direction_per_group positions in a group are already open in
+  # one direction, new entries in that direction are blocked.
+  groups:
+    risk_on: [SPX, NDX, BTC]
+  max_same_direction_per_group: 2
+
+instruments:
+  SPX:
+    symbol: "^GSPC"
+    name: "S&P 500"
+    strategy: mean_reversion
+    timeframe: "15m"
+    params:
+      lookback: 20
+      entry_z: 2.0
+      exit_z: 0.5
+      atr_period: 14
+      atr_stop_mult: 2.0
+
+  NDX:
+    symbol: "^IXIC"
+    name: "Nasdaq Composite"
+    strategy: mean_reversion
+    timeframe: "15m"
+    params:
+      lookback: 20
+      entry_z: 2.0
+      exit_z: 0.5
+      atr_period: 14
+      atr_stop_mult: 2.0
+
+  BTC:
+    symbol: "BTC-USD"
+    name: "Bitcoin"
+    strategy: momentum_breakout
+    timeframe: "1h"
+    params:
+      entry_channel: 20
+      exit_channel: 10
+      atr_period: 14
+      atr_stop_mult: 2.5
+
+  GOLD:
+    symbol: "GC=F"
+    name: "Gold"
+    strategy: trend_following
+    timeframe: "4h"
+    params:
+      fast_ema: 20
+      slow_ema: 50
+      atr_period: 14
+      atr_stop_mult: 3.0
+
+  OIL:
+    symbol: "CL=F"
+    name: "Crude Oil"
+    strategy: trend_following
+    timeframe: "4h"
+    params:
+      fast_ema: 20
+      slow_ema: 50
+      atr_period: 14
+      atr_stop_mult: 3.0
