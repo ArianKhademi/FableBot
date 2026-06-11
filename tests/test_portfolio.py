@@ -64,6 +64,16 @@ def test_no_stop_when_safe():
     assert "BTC" in broker.positions
 
 
+def test_excursions_tracked_and_copied_to_trade():
+    broker = PaperBroker(100_000.0)
+    broker.open_position(make_position())  # long 0.5 @ 60,000
+    broker.update_excursions("BTC", high=63_000.0, low=59_000.0)
+    trade = broker.close_position("BTC", 60_500.0, "exit")
+    assert trade.max_favorable_pnl == pytest.approx(1500.0)
+    assert trade.max_adverse_pnl == pytest.approx(-500.0)
+    assert trade.risk_amount == pytest.approx(1000.0)
+
+
 def test_state_persistence_round_trip(tmp_path):
     state = tmp_path / "portfolio.json"
     broker = PaperBroker(100_000.0, state_path=state)

@@ -119,6 +119,69 @@ def test_morning_and_evening_reports_render():
     assert "Equity:" in evening_body
 
 
+def test_blocked_signal_opens_shadow_position():
+    breakout = make_ohlcv(list(noisy_flat(40, seed=4)) + [110.0])
+    frames = {"^GSPC": dip(1), "^IXIC": dip(2), "BTC-USD": breakout}
+    engine = engine_with(frames)
+    engine.run_cycle()
+    assert "BTC" not in engine.broker.positions
+    assert "BTC" in engine.shadow.positions
+    shadow_pos = engine.shadow.positions["BTC"]
+    # Same sizing discipline as a real trade
+    assert shadow_pos.risk_amount == pytest.approx(1000.0)
+    blocked = [
+        e
+        for e in engine.journal.read()
+        if e["event"] == "decision" and e["instrument"] == "BTC" and e["action"] == "blocked"
+    ]
+    assert len(blocked) == 1
+    assert "correlation" in blocked[0]["reason"]
+
+
+def test_shadow_trade_resolves_and_is_journaled():
+    breakout = make_ohlcv(list(noisy_flat(40, seed=4)) + [110.0])
+    frames = {"^GSPC": dip(1), "^IXIC": dip(2), "BTC-USD": breakout}
+    engine = engine_with(frames)
+    engine.run_cycle()
+    assert "BTC" in engine.shadow.positions
+
+    # The breakout collapses far through the shadow stop
+    frames["BTC-USD"] = make_ohlcv(list(noisy_flat(40, seed=4)) + [110.0, 80.0])
+    engine.run_cycle()
+    assert "BTC" not in engine.shadow.positions
+    shadow_trades = [
+        e for e in engine.journal.read() if e["event"] == "trade_closed" and e["shadow"]
+    ]
+    assert len(shadow_trades) == 1
+    assert shadow_trades[0]["trade"]["instrument"] == "BTC"
+    assert shadow_trades[0]["trade"]["pnl"] < 0
+    # The counterfactual never touches real equity
+    assert engine.broker.realized_pnl == 0.0
+
+
+def test_every_decision_is_journaled_including_holds():
+    frames = {"^GSPC": flat(1), "^IXIC": flat(2), "BTC-USD": flat(3)}
+    engine = engine_with(frames)
+    engine.run_cycle()
+    decisions = [e for e in engine.journal.read() if e["event"] == "decision"]
+    assert len(decisions) == 3
+    assert all(d["action"] == "hold" for d in decisions)
+    assert all("context" in d and d["context"]["atr"] > 0 for d in decisions)
+
+
+def test_journal_captures_strategy_context_on_entry():
+    frames = {"^GSPC": dip(1), "^IXIC": flat(2), "BTC-USD": flat(3)}
+    engine = engine_with(frames)
+    engine.run_cycle()
+    opens = [
+        e
+        for e in engine.journal.read()
+        if e["event"] == "decision" and e["action"] == "open_long"
+    ]
+    assert len(opens) == 1
+    assert opens[0]["context"]["zscore"] < -2.0  # the world as the strategy saw it
+
+
 def test_state_survives_restart(tmp_path):
     state = tmp_path / "portfolio.json"
     frames = {"^GSPC": dip(1), "^IXIC": flat(2), "BTC-USD": flat(3)}

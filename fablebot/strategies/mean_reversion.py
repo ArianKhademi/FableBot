@@ -61,3 +61,9 @@ class MeanReversion(Strategy):
             f"z-score {z:+.2f} vs ±{self.entry_z:.1f} entry band — "
             f"fading overextensions on the {self.lookback}-bar mean"
         )
+
+    def context(self, df: pd.DataFrame) -> dict:
+        ctx = super().context(df)
+        z = self._z(df)
+        ctx.update(zscore=None if math.isnan(z) else z, entry_z=self.entry_z, exit_z=self.exit_z)
+        return ctx

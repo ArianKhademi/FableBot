@@ -26,7 +26,12 @@ def main() -> None:
     parser.add_argument("--report", choices=["morning", "evening"])
     args = parser.parse_args()
 
-    engine = TradingEngine(load_config(args.config), state_path=ROOT / "state/portfolio.json")
+    engine = TradingEngine(
+        load_config(args.config),
+        state_path=ROOT / "state/portfolio.json",
+        journal_path=ROOT / "state/journal.jsonl",
+        shadow_state_path=ROOT / "state/shadow.json",
+    )
 
     if args.report == "morning":
         engine.send_morning_report()

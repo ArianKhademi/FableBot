@@ -33,10 +33,20 @@ class Position:
     strategy: str
     reason: str
     opened_at: str = field(default_factory=_utcnow)
+    # Excursion tracking (dollars): the best and worst the trade looked while
+    # open. Feeds the learning loop's stop-quality analysis.
+    max_favorable_pnl: float = 0.0
+    max_adverse_pnl: float = 0.0
 
     def unrealized_pnl(self, price: float) -> float:
         sign = 1.0 if self.direction == "long" else -1.0
         return (price - self.entry_price) * self.units * sign
+
+    def update_excursions(self, high: float, low: float) -> None:
+        best = high if self.direction == "long" else low
+        worst = low if self.direction == "long" else high
+        self.max_favorable_pnl = max(self.max_favorable_pnl, self.unrealized_pnl(best))
+        self.max_adverse_pnl = min(self.max_adverse_pnl, self.unrealized_pnl(worst))
 
     def stop_hit(self, high: float, low: float) -> bool:
         if self.direction == "long":
@@ -57,6 +67,9 @@ class Trade:
     close_reason: str
     opened_at: str
     closed_at: str = field(default_factory=_utcnow)
+    risk_amount: float = 0.0
+    max_favorable_pnl: float = 0.0
+    max_adverse_pnl: float = 0.0
 
 
 class Broker:
@@ -118,11 +131,20 @@ class PaperBroker(Broker):
             open_reason=pos.reason,
             close_reason=reason,
             opened_at=pos.opened_at,
+            risk_amount=pos.risk_amount,
+            max_favorable_pnl=max(pos.max_favorable_pnl, pnl),
+            max_adverse_pnl=min(pos.max_adverse_pnl, pnl),
         )
         self.realized_pnl += pnl
         self.trades.append(trade)
         self._save()
         return trade
+
+    def update_excursions(self, instrument: str, high: float, low: float) -> None:
+        pos = self.positions.get(instrument)
+        if pos is not None:
+            pos.update_excursions(high, low)
+            self._save()
 
     def enforce_stops(self, instrument: str, high: float, low: float, close: float) -> Optional[Trade]:
         """The hard stop, checked every cycle. Returns the closing trade if

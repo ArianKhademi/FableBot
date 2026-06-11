@@ -65,6 +65,30 @@ Reports print to the console, are archived under `reports/`, and are POSTed
 to a webhook if `FABLEBOT_WEBHOOK_URL` is set (works with Slack/Discord-style
 JSON webhooks).
 
+## The learning loop
+
+The bot doesn't just trade — it keeps the evidence needed to get better, and
+proposes its own improvements for human approval. Full design in
+[`docs/learning-loop.md`](docs/learning-loop.md).
+
+- **Decision journal** (`state/journal.jsonl`): every decision — opens,
+  closes, stops, holds, *and signals the correlation filter blocked* — with
+  the indicator context the strategy saw, plus MAE/MFE on every closed trade.
+- **Shadow book**: blocked trades run in a parallel paper book with identical
+  sizing and stops, so the correlation filter's real cost/benefit is measured,
+  not assumed.
+- **Analytics** (`python3 scripts/analyze.py`): expectancy per strategy and
+  instrument, near-miss stop-outs, re-entries after stops, and the filter
+  counterfactual — with small samples explicitly flagged as noise.
+- **Nightly Claude review** (`scripts/nightly_review.sh`, cron it at 21:30):
+  Claude Code reads the digest, journal, and code under the constraints in
+  [`prompts/reviewer.md`](prompts/reviewer.md), and — only when the evidence
+  clears the bar — opens a draft PR with validated changes. You merge or
+  reject; the running bot is untouched until you do.
+- **The constitution** ([`RISK_RULES.md`](RISK_RULES.md), enforced by
+  `tests/test_invariants.py`): the hard stop, ATR sizing, gap protection,
+  and the 1% risk ceiling are not tunable, by the reviewer or anyone else.
+
 ## Quick start
 
 ```bash
@@ -103,7 +127,9 @@ fablebot/
 ├── indicators.py     # ATR, EMA, z-score, Donchian channels
 ├── risk.py           # ATR position sizing, hard stop, correlation filter
 ├── portfolio.py      # positions, paper broker, trade log, persistence
-├── engine.py         # evaluation cycle + scheduler
+├── engine.py         # evaluation cycle + scheduler + shadow book
+├── journal.py        # append-only decision journal (JSONL)
+├── analytics.py      # digest: expectancy, stop quality, counterfactuals
 ├── reports.py        # 7am briefing / 9pm recap builders
 ├── notify.py         # console / file / webhook delivery
 ├── backtest.py       # bar-by-bar simulator
