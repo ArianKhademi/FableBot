@@ -68,20 +68,20 @@ JSON webhooks).
 ## Quick start
 
 ```bash
-pip install -r requirements.txt
+pip3 install -r requirements.txt
 
 # Run the test suite (synthetic data, no network needed)
-python -m pytest
+python3 -m pytest
 
 # Backtest a single instrument over recent history
-python scripts/backtest.py BTC --days 120
+python3 scripts/backtest.py BTC --days 120
 
 # Run the live paper-trading loop (fetches data from Yahoo Finance)
-python scripts/run_bot.py
+python3 scripts/run_bot.py
 
 # Generate either report on demand
-python scripts/run_bot.py --report morning
-python scripts/run_bot.py --report evening
+python3 scripts/run_bot.py --report morning
+python3 scripts/run_bot.py --report evening
 ```
 
 The bot is **paper-trading only**: it fetches real market data and simulates
