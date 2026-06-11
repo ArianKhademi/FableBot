@@ -66,5 +66,16 @@ class Strategy:
         used in the morning briefing."""
         return ""
 
+    def context(self, df: pd.DataFrame) -> dict:
+        """Indicator state at decision time, written to the decision journal
+        so the learning loop can reconstruct what the strategy saw."""
+        close = float(df["close"].iloc[-1])
+        cur_atr = self.current_atr(df)
+        return {
+            "close": close,
+            "atr": cur_atr,
+            "atr_pct": (cur_atr / close * 100.0) if close else 0.0,
+        }
+
     def _hold(self, df: pd.DataFrame, reason: str = "no signal") -> Signal:
         return Signal(Action.HOLD, reason, self.current_atr(df))

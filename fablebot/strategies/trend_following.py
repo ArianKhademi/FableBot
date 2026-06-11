@@ -56,3 +56,15 @@ class TrendFollowing(Strategy):
             return "warming up"
         trend = "up" if fast > slow else "down"
         return f"{trend}trend — EMA{self.fast} {fast:,.2f} vs EMA{self.slow} {slow:,.2f}"
+
+    def context(self, df: pd.DataFrame) -> dict:
+        ctx = super().context(df)
+        fast, slow = self._emas(df)
+        ctx.update(
+            fast_ema=None if math.isnan(fast) else fast,
+            slow_ema=None if math.isnan(slow) else slow,
+            ema_spread_atr=(fast - slow) / ctx["atr"]
+            if not (math.isnan(fast) or math.isnan(slow)) and ctx["atr"]
+            else None,
+        )
+        return ctx

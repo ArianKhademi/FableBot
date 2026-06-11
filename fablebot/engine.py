@@ -7,6 +7,12 @@ The cycle for each instrument:
   3. ask the strategy for a signal
   4. entries pass through the correlation filter, then get ATR-sized
   5. the paper broker records the fill
+
+Everything the engine decides — including HOLDs and signals the correlation
+filter blocked — is written to the decision journal. Blocked entries also
+open *shadow positions*: paper-paper trades tracked with the same stops and
+exits but no effect on equity, so the learning loop can measure what the
+filter actually saved or cost.
 """
 
 from __future__ import annotations
@@ -21,6 +27,7 @@ import pandas as pd
 
 from .config import Config, InstrumentConfig
 from .data import fetch_ohlcv
+from .journal import Journal
 from .notify import Notifier
 from .portfolio import PaperBroker, Position
 from .reports import build_snapshot, evening_recap, morning_briefing
@@ -38,11 +45,17 @@ class TradingEngine:
         state_path: Optional[Path] = Path("state/portfolio.json"),
         fetch: FetchFn = fetch_ohlcv,
         notifier: Optional[Notifier] = None,
+        journal_path: Optional[Path] = None,
+        shadow_state_path: Optional[Path] = None,
     ):
         self.config = config
         self.fetch = fetch
         self.notifier = notifier or Notifier()
         self.broker = PaperBroker(config.account.starting_equity, state_path)
+        # The shadow book holds trades the correlation filter blocked: same
+        # sizing, stops, and exits, but no effect on equity. Counterfactuals.
+        self.shadow = PaperBroker(0.0, shadow_state_path)
+        self.journal = Journal(journal_path)
         self.correlation = CorrelationFilter(
             config.correlation.groups,
             config.correlation.max_same_direction_per_group,
@@ -64,12 +77,35 @@ class TradingEngine:
             return [f"{key}: only {len(df)} bars, need {strategy.min_bars()} — skipping"]
 
         bar = df.iloc[-1]
-        close = float(bar["close"])
+        high, low, close = float(bar["high"]), float(bar["low"]), float(bar["close"])
         self.last_prices[key] = close
+        context = strategy.context(df)
 
-        stopped = self.broker.enforce_stops(key, float(bar["high"]), float(bar["low"]), close)
+        def journal(action: str, reason: str, shadow: bool = False) -> None:
+            position = self.broker.positions.get(key)
+            self.journal.record_decision(
+                instrument=key,
+                action=action,
+                reason=reason,
+                price=close,
+                atr=context.get("atr", float("nan")),
+                context=context,
+                position_direction=position.direction if position else None,
+                equity=self.broker.equity,
+                shadow=shadow,
+            )
+
+        self.broker.update_excursions(key, high, low)
+        stopped = self.broker.enforce_stops(key, high, low, close)
         if stopped is not None:
             log.append(f"{key}: STOPPED OUT {stopped.pnl:+,.2f} ({stopped.close_reason})")
+            journal("stopped", stopped.close_reason)
+            self.journal.record_trade(stopped)
+
+        # Advance the shadow book here — before entries — so a shadow opened
+        # this cycle isn't stop-checked against the bar it entered on (the
+        # real book gets the same courtesy by construction).
+        self._run_shadow(key, strategy, df, high, low, close, log)
 
         position = self.broker.positions.get(key)
         signal = strategy.evaluate(df, position.direction if position else None)
@@ -77,14 +113,13 @@ class TradingEngine:
         if signal.action is Action.CLOSE and position is not None:
             trade = self.broker.close_position(key, close, signal.reason)
             log.append(f"{key}: closed {trade.direction} {trade.pnl:+,.2f} ({signal.reason})")
+            journal("close", signal.reason)
+            self.journal.record_trade(trade)
         elif signal.opens and position is None:
             direction = signal.direction
             allowed, why = self.correlation.allows(
                 key, direction, self.broker.open_directions()
             )
-            if not allowed:
-                log.append(f"{key}: {direction} signal blocked — {why}")
-                return log
             sized = size_position(
                 equity=self.broker.equity,
                 risk_per_trade=self.config.account.risk_per_trade,
@@ -93,24 +128,72 @@ class TradingEngine:
                 atr_stop_mult=strategy.atr_stop_mult,
                 direction=direction,
             )
-            self.broker.open_position(
-                Position(
-                    instrument=key,
-                    direction=direction,
-                    units=sized.units,
-                    entry_price=close,
-                    stop_price=sized.stop_price,
-                    risk_amount=sized.risk_amount,
-                    strategy=strategy.name,
-                    reason=signal.reason,
+            if not allowed:
+                log.append(f"{key}: {direction} signal blocked — {why}")
+                journal("blocked", f"{signal.reason} | {why}")
+                self._open_shadow(key, direction, close, sized, strategy.name, signal.reason)
+            else:
+                self.broker.open_position(
+                    Position(
+                        instrument=key,
+                        direction=direction,
+                        units=sized.units,
+                        entry_price=close,
+                        stop_price=sized.stop_price,
+                        risk_amount=sized.risk_amount,
+                        strategy=strategy.name,
+                        reason=signal.reason,
+                    )
                 )
-            )
-            log.append(
-                f"{key}: opened {direction} {sized.units:.4f} @ {close:,.2f} "
-                f"(stop {sized.stop_price:,.2f}, risking {sized.risk_amount:,.2f}) — "
-                f"{signal.reason}"
-            )
+                log.append(
+                    f"{key}: opened {direction} {sized.units:.4f} @ {close:,.2f} "
+                    f"(stop {sized.stop_price:,.2f}, risking {sized.risk_amount:,.2f}) — "
+                    f"{signal.reason}"
+                )
+                journal(signal.action.value, signal.reason)
+        else:
+            journal("hold", signal.reason)
         return log
+
+    # -- shadow book ----------------------------------------------------------
+
+    def _open_shadow(
+        self, key: str, direction: str, close: float, sized, strategy_name: str, reason: str
+    ) -> None:
+        if key in self.shadow.positions:
+            return
+        self.shadow.open_position(
+            Position(
+                instrument=key,
+                direction=direction,
+                units=sized.units,
+                entry_price=close,
+                stop_price=sized.stop_price,
+                risk_amount=sized.risk_amount,
+                strategy=strategy_name,
+                reason=f"[shadow] {reason}",
+            )
+        )
+
+    def _run_shadow(
+        self, key: str, strategy, df, high: float, low: float, close: float, log: list[str]
+    ) -> None:
+        """Advance the shadow position for this instrument, if any, with the
+        same stop and exit logic the real book uses."""
+        if key not in self.shadow.positions:
+            return
+        self.shadow.update_excursions(key, high, low)
+        stopped = self.shadow.enforce_stops(key, high, low, close)
+        if stopped is not None:
+            log.append(f"{key}: shadow trade stopped {stopped.pnl:+,.2f} (would-have-been)")
+            self.journal.record_trade(stopped, shadow=True)
+            return
+        direction = self.shadow.positions[key].direction
+        signal = strategy.evaluate(df, direction)
+        if signal.action is Action.CLOSE:
+            trade = self.shadow.close_position(key, close, signal.reason)
+            log.append(f"{key}: shadow trade closed {trade.pnl:+,.2f} (would-have-been)")
+            self.journal.record_trade(trade, shadow=True)
 
     def run_cycle(self) -> list[str]:
         """One full pass over all instruments."""

@@ -78,3 +78,14 @@ class MomentumBreakout(Strategy):
         if math.isnan(hi):
             return "warming up"
         return f"breakout levels: above {hi:,.2f} or below {lo:,.2f} ({self.entry_channel}-bar channel)"
+
+    def context(self, df: pd.DataFrame) -> dict:
+        ctx = super().context(df)
+        entry_hi, entry_lo = donchian(df, self.entry_channel)
+        hi, lo = float(entry_hi.iloc[-1]), float(entry_lo.iloc[-1])
+        ctx.update(
+            channel_high=None if math.isnan(hi) else hi,
+            channel_low=None if math.isnan(lo) else lo,
+            channel_width_atr=(hi - lo) / ctx["atr"] if not math.isnan(hi) and ctx["atr"] else None,
+        )
+        return ctx
