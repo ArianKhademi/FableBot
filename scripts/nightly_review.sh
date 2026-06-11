@@ -3,7 +3,7 @@
 # open a draft PR if (and only if) it found something worth changing.
 #
 # Cron (after the 21:00 evening recap):
-#   30 21 * * * /path/to/FableBot/scripts/nightly_review.sh >> /path/to/FableBot/logs/review.log 2>&1
+#   30 21 * * * /Users/ariankhademi/Documents/Business/FableBot/scripts/nightly_review.sh >> /Users/ariankhademi/Documents/Business/FableBot/logs/review.log 2>&1
 #
 # Requires: claude (Claude Code CLI, authenticated), gh (authenticated), git.
 
