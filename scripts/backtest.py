@@ -24,6 +24,12 @@ def main() -> None:
     parser.add_argument("instrument", help="instrument key from config.yaml (e.g. BTC)")
     parser.add_argument("--config", default=ROOT / "config.yaml")
     parser.add_argument("--equity", type=float, default=100_000.0)
+    parser.add_argument(
+        "--days",
+        type=int,
+        default=None,
+        help="days of history to backtest (default: fetch window for timeframe)",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
@@ -31,8 +37,9 @@ def main() -> None:
         sys.exit(f"Unknown instrument {args.instrument!r}; choose from {sorted(config.instruments)}")
     inst = config.instruments[args.instrument]
 
-    print(f"Fetching {inst.symbol} ({inst.timeframe})...")
-    df = fetch_ohlcv(inst.symbol, inst.timeframe)
+    window = f"{args.days}d" if args.days is not None else "default"
+    print(f"Fetching {inst.symbol} ({inst.timeframe}, {window})...")
+    df = fetch_ohlcv(inst.symbol, inst.timeframe, days=args.days)
     print(f"{len(df)} bars from {df.index[0]} to {df.index[-1]}")
 
     strategy = build_strategy(inst.strategy, inst.params)

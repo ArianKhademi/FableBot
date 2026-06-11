@@ -28,17 +28,24 @@ def resample_4h(df_1h: pd.DataFrame) -> pd.DataFrame:
     return df_1h.resample("4h").agg(agg).dropna(subset=["close"])
 
 
-def fetch_ohlcv(symbol: str, timeframe: str) -> pd.DataFrame:
+def fetch_ohlcv(symbol: str, timeframe: str, days: int | None = None) -> pd.DataFrame:
     """Fetch recent OHLCV bars for ``symbol`` at ``timeframe``
-    ('15m', '1h', or '4h')."""
+    ('15m', '1h', or '4h').
+
+    When ``days`` is set, request that many calendar days of history instead of
+    the default fetch window for the timeframe.
+    """
     import yfinance as yf
 
     if timeframe not in _FETCH_WINDOW:
         raise ValueError(f"Unsupported timeframe {timeframe!r}")
+    if days is not None and days <= 0:
+        raise ValueError(f"days must be positive, got {days}")
     interval = "1h" if timeframe == "4h" else timeframe
+    period = f"{days}d" if days is not None else _FETCH_WINDOW[timeframe]
     df = yf.download(
         symbol,
-        period=_FETCH_WINDOW[timeframe],
+        period=period,
         interval=interval,
         progress=False,
         auto_adjust=True,
