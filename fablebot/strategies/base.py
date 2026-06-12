@@ -49,6 +49,11 @@ class Strategy:
         self.params = dict(params)
         self.atr_period = int(self.params.get("atr_period", 14))
         self.atr_stop_mult = float(self.params.get("atr_stop_mult", 2.0))
+        # Optional trailing stop: ratchets the stop an ATR multiple behind
+        # price as the trade works. None disables trailing (the stop stays
+        # where entry placed it).
+        trail = self.params.get("trail_atr_mult")
+        self.trail_atr_mult = float(trail) if trail is not None else None
 
     def min_bars(self) -> int:
         """Bars of history required before signals are meaningful."""

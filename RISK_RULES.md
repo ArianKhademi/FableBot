@@ -9,7 +9,9 @@ its title and will not be auto-anything: it waits for an explicit human yes.
 1. **Hard per-trade stop.** Every position has a stop at entry, priced so
    that hitting it loses no more than `account.risk_per_trade` of equity.
    No strategy may open a position without one, widen one after entry, or
-   override the broker's stop enforcement.
+   override the broker's stop enforcement. Trailing stops that only ratchet
+   toward price (tightening risk, locking in profit) are allowed — the
+   direction of stop movement is one-way, and that is enforced in code.
 
 2. **ATR-based sizing.** Position size is always risk budget ÷ stop
    distance. No fixed sizes, no martingale, no "double up after a loss."

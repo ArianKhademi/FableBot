@@ -52,6 +52,7 @@ instruments:
       exit_channel: 10
       atr_period: 14
       atr_stop_mult: 2.5
+      trail_atr_mult: 2.5  # ratchet the stop 2.5 ATR behind price as the move works
 
   GOLD:
     symbol: "GC=F"
@@ -63,6 +64,7 @@ instruments:
       slow_ema: 50
       atr_period: 14
       atr_stop_mult: 3.0
+      trail_atr_mult: 3.0  # lock in profit as the wave runs; never widens
 
   OIL:
     symbol: "CL=F"
@@ -74,3 +76,4 @@ instruments:
       slow_ema: 50
       atr_period: 14
       atr_stop_mult: 3.0
+      trail_atr_mult: 3.0
