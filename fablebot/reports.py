@@ -1,6 +1,7 @@
 """The two daily messages.
 
-7am: what's happening in the market. 9pm: how the bot did.
+7am: what's happening in the market (including recent news headlines).
+9pm: how the bot did.
 """
 
 from __future__ import annotations
@@ -11,6 +12,7 @@ from typing import Optional
 
 import pandas as pd
 
+from .news import fetch_news, format_news_block
 from .portfolio import PaperBroker, Trade
 from .strategies.base import Strategy
 
@@ -19,23 +21,24 @@ from .strategies.base import Strategy
 class MarketSnapshot:
     instrument: str
     name: str
+    symbol: str
     last_price: float
-    change_pct: float  # % change over roughly the last session
-    atr_pct: float  # ATR as % of price — the volatility regime
-    watching: str  # what the strategy is waiting for
+    change_pct: float
+    atr_pct: float
+    watching: str
 
 
 def build_snapshot(
-    key: str, name: str, df: pd.DataFrame, strategy: Strategy
+    key: str, name: str, symbol: str, df: pd.DataFrame, strategy: Strategy
 ) -> MarketSnapshot:
     last = float(df["close"].iloc[-1])
-    # ~one session back, capped by available history
     back = min(len(df) - 1, _bars_per_day(df))
     prev = float(df["close"].iloc[-1 - back]) if back > 0 else last
     cur_atr = strategy.current_atr(df)
     return MarketSnapshot(
         instrument=key,
         name=name,
+        symbol=symbol,
         last_price=last,
         change_pct=(last / prev - 1.0) * 100.0 if prev else 0.0,
         atr_pct=(cur_atr / last) * 100.0 if last else 0.0,
@@ -60,7 +63,10 @@ def _vol_label(atr_pct: float) -> str:
 
 
 def morning_briefing(
-    snapshots: list[MarketSnapshot], broker: PaperBroker, now: Optional[datetime] = None
+    snapshots: list[MarketSnapshot],
+    broker: PaperBroker,
+    now: Optional[datetime] = None,
+    include_news: bool = True,
 ) -> str:
     now = now or datetime.now()
     lines = [f"Good morning — market check for {now:%A, %B %d}.", ""]
@@ -72,6 +78,11 @@ def morning_briefing(
         )
         if snap.watching:
             lines.append(f"  watching: {snap.watching}")
+        if include_news:
+            headlines = fetch_news(snap.symbol)
+            if headlines:
+                lines.append("  news:")
+                lines.append(format_news_block(headlines, indent="    "))
     lines.append("")
     if broker.positions:
         lines.append("Open positions:")

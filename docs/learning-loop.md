@@ -95,11 +95,81 @@ crontab -e
 Requirements: `claude` (Claude Code CLI) authenticated, `gh` authenticated
 against the repo, and the bot writing to `state/journal.jsonl` (the default).
 
-## Why not train an ML/RL model on the trades?
+## Layer 4 — the continuous optimizer (always running)
 
-At ~2–5 closed trades a day, a year of live trading is under 2,000 samples —
-not enough to train a model that generalizes, but plenty for it to memorize
-noise. The journal is deliberately model-ready (structured context on every
-decision), so if the trade count ever justifies it, the data will be there.
-Until then, the reviewer + backtest validation loop gets the benefit of
-"learning from mistakes" without the overfitting failure mode.
+```bash
+python3 scripts/optimize_loop.py          # start alongside run_bot.py
+python3 scripts/optimize_loop.py --sleep 3  # slower, less CPU
+python3 scripts/optimize_loop.py --instrument BTC  # one instrument
+```
+
+Because accumulating live trade history is slow (~2–5 trades/day), the
+optimizer runs walk-forward backtests continuously in the background to
+explore the parameter space immediately:
+
+1. Round-robins through instruments that have `param_bounds` in config.
+2. Fetches up to 700 days of history per instrument (longer than the live
+   trading window) and splits 75% train / 25% out-of-sample.
+3. Randomly samples a parameter set within the bounds, runs the backtest
+   on both halves, computes annualised Sharpe ratio.
+4. Logs **every trial** to `state/backtest_history.jsonl` — including the
+   current config's baseline — so the history is always honest.
+5. When OOS Sharpe beats the baseline by ≥0.15 **and** there are ≥8 OOS
+   trades behind it, writes a proposal to `state/proposals.jsonl`.
+
+The nightly reviewer reads both files. `scripts/proposals.py` renders a
+human-readable summary of what the optimizer found.
+
+### Walk-forward, not simple backtesting
+
+Optimizing on the full history and looking at in-sample Sharpe is the
+fastest way to build a strategy that looks great in backtests and fails
+live. The optimizer holds out the last 25% of history as a blind test:
+a configuration must beat the baseline on data it was never trained on.
+High in-sample / low OOS Sharpe in the history = overfit, ignore it.
+
+### What it cannot do
+
+The optimizer changes numbers in `param_bounds` (entry thresholds, EMAs,
+channel lengths, stop multipliers). It cannot propose removing the hard
+stop, adding leverage, or anything else `RISK_RULES.md` protects. The
+reviewer is still the decision-maker — the optimizer only produces
+evidence.
+
+## Full system diagram
+
+```
+ run_bot.py                optimize_loop.py         nightly_review.sh
+┌────────────┐   prices   ┌──────────────────┐   ┌──────────────────────┐
+│ 5-min cycle│            │ random param      │   │ 1. analyze.py        │
+│            │            │ sampling          │   │ 2. proposals.py      │
+│ decisions ─┼──────────► │ walk-forward      │   │ 3. claude reviews    │
+│ shadow book│            │ 75/25 split       │   │    digest + proposals │
+│ excursions │            │ Sharpe filter     │   │    + history          │
+│     ↓      │            │       ↓           │   │ 4. validate.py       │
+│ journal    │            │ backtest_history  │   │ 5. draft PR if       │
+│ .jsonl     │            │ proposals.jsonl   │──►│    warranted          │
+└────────────┘            └──────────────────┘   └──────────────────────┘
+                                                           ↓ you merge
+```
+
+## Setup (two terminal tabs, or two tmux panes)
+
+```bash
+# Tab 1 — the live trading loop
+python3 scripts/run_bot.py
+
+# Tab 2 — the continuous optimizer (runs forever alongside the bot)
+python3 scripts/optimize_loop.py
+
+# Cron — the nightly review at 21:30
+30 21 * * * /Users/ariankhademi/Documents/Business/FableBot/scripts/nightly_review.sh >> /Users/ariankhademi/Documents/Business/FableBot/logs/review.log 2>&1
+```
+
+## Why not train an ML/RL model directly?
+
+The journal is deliberately structured so the data will be there if trade
+volume ever justifies it. Until then, the walk-forward optimizer + Claude
+reviewer gives the same "learn from backtests" benefit without the
+overfitting trap: every proposal must survive on held-out data it never
+saw.
