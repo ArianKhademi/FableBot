@@ -6,20 +6,36 @@
 #   30 21 * * * /Users/ariankhademi/Documents/Business/FableBot/scripts/nightly_review.sh >> /Users/ariankhademi/Documents/Business/FableBot/logs/review.log 2>&1
 #
 # Requires: claude (Claude Code CLI, authenticated), gh (authenticated), git.
+# Test it manually first: bash scripts/nightly_review.sh
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
+# Cron runs with a bare-bones environment; make sure Homebrew and user bins
+# are on PATH so claude/gh/python3 resolve the same way they do in a shell.
+export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$PATH"
+
 DATE="$(date +%Y-%m-%d)"
 BRANCH="bot-review/${DATE}"
 
-echo "=== nightly review ${DATE} ==="
+echo "=== nightly review ${DATE} ($(date '+%H:%M')) ==="
+
+fail() { echo "REVIEW FAILED: $1" >&2; exit 1; }
+
+# Preflight: surface the actual problem instead of a bare 'fatal:' line.
+command -v python3 >/dev/null 2>&1 || fail "python3 not found on PATH"
+command -v git     >/dev/null 2>&1 || fail "git not found on PATH"
+command -v claude  >/dev/null 2>&1 || fail "claude CLI not found on PATH — is Claude Code installed for this user?"
+command -v gh      >/dev/null 2>&1 || fail "gh CLI not found on PATH — brew install gh"
+gh auth status >/dev/null 2>&1 || fail "gh is not authenticated — run: gh auth login"
+git diff --quiet || fail "working tree has uncommitted changes — commit or stash them so the review can branch safely"
 
 # 1. Digest the journal (analytics are deterministic; this always runs).
 python3 scripts/analyze.py --days 30 --write analysis/latest_digest.md
 
 # 2. Review on a fresh branch off main so proposals never touch the running code.
-git fetch origin main
+git fetch origin main \
+    || fail "git fetch failed — cron has no interactive credentials; run: gh auth setup-git (or switch the remote to SSH)"
 git checkout -B "${BRANCH}" origin/main
 
 # 3. Claude reads the digest + journal + code under the reviewer constitution.
@@ -42,3 +58,4 @@ fi
 # 5. Return to the live branch so the bot keeps running yesterday's code
 #    until a human merges the proposal.
 git checkout -
+echo "=== review finished ==="

@@ -49,6 +49,10 @@ position flipped on the opposite signal. Slow by design.
   that hitting it loses exactly the per-trade risk budget. On top of that,
   the broker force-closes any position whose unrealized loss reaches the risk
   budget (covers gaps past the stop). There is no "let me give it room."
+- **Trailing stops on trend trades.** Bitcoin, gold, and oil ratchet their
+  stop an ATR multiple behind price as the move works (`trail_atr_mult` in
+  config), converting open profit into locked-in profit. Stops only ever
+  tighten — widening is constitutionally impossible.
 - **Correlation filter.** S&P, Nasdaq, and Bitcoin are tagged `risk_on`. If
   two of them are already long, the bot will not open a third long in the
   group — that would double the real exposure, not diversify it.

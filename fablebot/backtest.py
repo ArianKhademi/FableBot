@@ -60,6 +60,7 @@ def run_backtest(
 
         position = broker.positions.get(instrument)
         signal = strategy.evaluate(window, position.direction if position else None)
+        opened_this_bar = False
 
         if signal.action is Action.CLOSE and position is not None:
             broker.close_position(instrument, close, signal.reason)
@@ -83,6 +84,13 @@ def run_backtest(
                     strategy=strategy.name,
                     reason=signal.reason,
                 )
+            )
+            opened_this_bar = True
+
+        if strategy.trail_atr_mult and instrument in broker.positions and not opened_this_bar:
+            broker.trail_stop(
+                instrument, float(bar["high"]), float(bar["low"]),
+                signal.atr, strategy.trail_atr_mult,
             )
         equity_curve.append(broker.total_equity({instrument: close}))
 

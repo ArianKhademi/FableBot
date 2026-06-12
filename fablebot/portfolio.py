@@ -48,6 +48,25 @@ class Position:
         self.max_favorable_pnl = max(self.max_favorable_pnl, self.unrealized_pnl(best))
         self.max_adverse_pnl = min(self.max_adverse_pnl, self.unrealized_pnl(worst))
 
+    def trail(self, high: float, low: float, atr: float, trail_mult: float) -> bool:
+        """Ratchet the stop toward price, chandelier-style: an ATR multiple
+        behind the bar's favorable extreme. Stops only ever tighten — a
+        candidate that would widen the stop is ignored. Returns True if the
+        stop moved."""
+        if atr <= 0 or trail_mult <= 0:
+            return False
+        if self.direction == "long":
+            candidate = high - atr * trail_mult
+            if candidate > self.stop_price:
+                self.stop_price = candidate
+                return True
+        else:
+            candidate = low + atr * trail_mult
+            if candidate < self.stop_price:
+                self.stop_price = candidate
+                return True
+        return False
+
     def stop_hit(self, high: float, low: float) -> bool:
         if self.direction == "long":
             return low <= self.stop_price
@@ -145,6 +164,17 @@ class PaperBroker(Broker):
         if pos is not None:
             pos.update_excursions(high, low)
             self._save()
+
+    def trail_stop(
+        self, instrument: str, high: float, low: float, atr: float, trail_mult: float
+    ) -> bool:
+        pos = self.positions.get(instrument)
+        if pos is None:
+            return False
+        moved = pos.trail(high, low, atr, trail_mult)
+        if moved:
+            self._save()
+        return moved
 
     def enforce_stops(self, instrument: str, high: float, low: float, close: float) -> Optional[Trade]:
         """The hard stop, checked every cycle. Returns the closing trade if

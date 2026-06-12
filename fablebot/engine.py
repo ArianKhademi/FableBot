@@ -109,6 +109,7 @@ class TradingEngine:
 
         position = self.broker.positions.get(key)
         signal = strategy.evaluate(df, position.direction if position else None)
+        opened_this_cycle = False
 
         if signal.action is Action.CLOSE and position is not None:
             trade = self.broker.close_position(key, close, signal.reason)
@@ -151,8 +152,18 @@ class TradingEngine:
                     f"{signal.reason}"
                 )
                 journal(signal.action.value, signal.reason)
+                opened_this_cycle = True
         else:
             journal("hold", signal.reason)
+
+        # Trailing stop: ratchet toward price on every bar after the entry
+        # bar (trailing against the entry bar itself would re-tighten the
+        # freshly placed stop). Only ever tightens — see Position.trail.
+        if strategy.trail_atr_mult and key in self.broker.positions and not opened_this_cycle:
+            if self.broker.trail_stop(key, high, low, signal.atr, strategy.trail_atr_mult):
+                new_stop = self.broker.positions[key].stop_price
+                log.append(f"{key}: stop trailed to {new_stop:,.2f}")
+                journal("trail", f"stop trailed to {new_stop:,.2f}")
         return log
 
     # -- shadow book ----------------------------------------------------------
@@ -194,6 +205,10 @@ class TradingEngine:
             trade = self.shadow.close_position(key, close, signal.reason)
             log.append(f"{key}: shadow trade closed {trade.pnl:+,.2f} (would-have-been)")
             self.journal.record_trade(trade, shadow=True)
+        elif strategy.trail_atr_mult:
+            # Shadow trades trail too, or the counterfactual would flatter
+            # whichever book didn't.
+            self.shadow.trail_stop(key, high, low, signal.atr, strategy.trail_atr_mult)
 
     def run_cycle(self) -> list[str]:
         """One full pass over all instruments."""
