@@ -1,0 +1,24 @@
+# FableBot performance digest
+
+Period: 2026-06-11 to 2026-06-12
+Decisions journaled: 485 (0 blocked by correlation filter)
+
+## Overall
+2 trades, 0% win rate, P&L -1,997.46, expectancy -998.73/trade, profit factor 0.00 — SMALL SAMPLE (<20), treat as noise
+
+## By strategy
+- mean_reversion: 2 trades, 0% win rate, P&L -1,997.46, expectancy -998.73/trade, profit factor 0.00 — SMALL SAMPLE (<20), treat as noise
+
+## By instrument
+- NDX: 1 trades, 0% win rate, P&L -998.73, expectancy -998.73/trade, profit factor 0.00 — SMALL SAMPLE (<20), treat as noise
+- SPX: 1 trades, 0% win rate, P&L -998.73, expectancy -998.73/trade, profit factor 0.00 — SMALL SAMPLE (<20), treat as noise
+
+## Stop-out quality
+Stop-outs: 2 of 2 trades
+No near-miss stop-outs — stopped trades never got meaningfully green.
+
+## Re-entries within 24h of a stop-out
+None.
+
+## Correlation filter counterfactual (shadow book)
+No blocked trades resolved this period.
