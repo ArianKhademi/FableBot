@@ -80,9 +80,9 @@ def render(store: ProposalStore, history_path: Path) -> str:
         by_instrument.setdefault(t["instrument"], []).append(t)
     for key in sorted(by_instrument):
         trials = by_instrument[key]
+        n = len(trials)
         baseline = next((t for t in reversed(trials) if t.get("is_baseline")), None)
         non_baseline = [t for t in trials if not t.get("is_baseline")]
-        base_txt = f"{baseline['oos_sharpe']:.3f}" if baseline else "n/a"
         if non_baseline:
             best = max(non_baseline, key=lambda t: t["oos_sharpe"])
             worst = min(non_baseline, key=lambda t: t["oos_sharpe"])
@@ -96,7 +96,7 @@ def render(store: ProposalStore, history_path: Path) -> str:
                 f"worst: {worst['oos_sharpe']:.3f})"
             )
         else:
-            lines.append(f"- **{key}**: {len(trials)} trials (baseline only so far)")
+            lines.append(f"- **{key}**: {n} trials (baseline only so far)")
 
     lines += [
         "",
