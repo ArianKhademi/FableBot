@@ -64,9 +64,10 @@ def render(proposals_path: Path, history_path: Path) -> str:
             best = max(non_baseline, key=lambda t: t["oos_sharpe"])
             worst = min(non_baseline, key=lambda t: t["oos_sharpe"])
             avg_oos = sum(t["oos_sharpe"] for t in non_baseline) / len(non_baseline)
+            baseline_sharpe = f"{baseline['oos_sharpe']:.3f}" if baseline else "n/a"
             lines.append(
                 f"- **{key}**: {n} trials total "
-                f"(baseline OOS Sharpe: {baseline['oos_sharpe']:.3f if baseline else 'n/a'}, "
+                f"(baseline OOS Sharpe: {baseline_sharpe}, "
                 f"best found: {best['oos_sharpe']:.3f}, "
                 f"avg: {avg_oos:.3f}, "
                 f"worst: {worst['oos_sharpe']:.3f})"
