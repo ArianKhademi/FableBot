@@ -29,6 +29,11 @@ instruments:
       exit_z: 0.5
       atr_period: 14
       atr_stop_mult: 2.0
+    param_bounds:
+      lookback: [10, 40]
+      entry_z: [1.5, 3.0]
+      exit_z: [0.2, 1.0]
+      atr_stop_mult: [1.5, 3.5]
 
   NDX:
     symbol: "^IXIC"
@@ -41,6 +46,11 @@ instruments:
       exit_z: 0.5
       atr_period: 14
       atr_stop_mult: 2.0
+    param_bounds:
+      lookback: [10, 40]
+      entry_z: [1.5, 3.0]
+      exit_z: [0.2, 1.0]
+      atr_stop_mult: [1.5, 3.5]
 
   BTC:
     symbol: "BTC-USD"
@@ -52,7 +62,12 @@ instruments:
       exit_channel: 10
       atr_period: 14
       atr_stop_mult: 2.5
-      trail_atr_mult: 2.5  # ratchet the stop 2.5 ATR behind price as the move works
+      trail_atr_mult: 2.5
+    param_bounds:
+      entry_channel: [10, 40]
+      exit_channel: [5, 20]
+      atr_stop_mult: [1.5, 4.0]
+      trail_atr_mult: [1.5, 4.0]
 
   GOLD:
     symbol: "GC=F"
@@ -64,7 +79,12 @@ instruments:
       slow_ema: 50
       atr_period: 14
       atr_stop_mult: 3.0
-      trail_atr_mult: 3.0  # lock in profit as the wave runs; never widens
+      trail_atr_mult: 3.0
+    param_bounds:
+      fast_ema: [10, 30]
+      slow_ema: [30, 80]
+      atr_stop_mult: [2.0, 5.0]
+      trail_atr_mult: [2.0, 5.0]
 
   OIL:
     symbol: "CL=F"
@@ -77,3 +97,8 @@ instruments:
       atr_period: 14
       atr_stop_mult: 3.0
       trail_atr_mult: 3.0
+    param_bounds:
+      fast_ema: [10, 30]
+      slow_ema: [30, 80]
+      atr_stop_mult: [2.0, 5.0]
+      trail_atr_mult: [2.0, 5.0]

@@ -30,8 +30,10 @@ command -v gh      >/dev/null 2>&1 || fail "gh CLI not found on PATH — brew in
 gh auth status >/dev/null 2>&1 || fail "gh is not authenticated — run: gh auth login"
 git diff --quiet || fail "working tree has uncommitted changes — commit or stash them so the review can branch safely"
 
-# 1. Digest the journal (analytics are deterministic; this always runs).
+# 1. Digest the journal and summarise the optimizer's findings so the reviewer
+#    has a single consolidated view rather than raw JSONL to parse.
 python3 scripts/analyze.py --days 30 --write analysis/latest_digest.md
+python3 scripts/proposals.py --write analysis/latest_proposals.md 2>/dev/null || true
 
 # 2. Review on a fresh branch off main so proposals never touch the running code.
 git fetch origin main \

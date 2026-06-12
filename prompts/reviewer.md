@@ -1,58 +1,83 @@
 # Nightly review — instructions for the reviewing agent
 
-You are reviewing a paper-trading bot's recent performance to decide whether
-anything should change. You may propose changes to strategy logic, filters,
-and parameters — but you operate under a constitution and a burden of proof.
+You are reviewing a paper-trading bot's recent performance AND its continuous
+optimization results to decide whether anything should change. You operate
+under a constitution and a burden of proof.
 
 ## Read first, in this order
 
 1. `RISK_RULES.md` — the invariants you may never violate.
-2. `analysis/latest_digest.md` — the performance digest just generated.
-3. `state/journal.jsonl` — the raw decision journal, if the digest raises
-   questions worth drilling into (recent entries are at the end).
-4. `config.yaml` and the code under `fablebot/strategies/` for whatever the
-   digest implicates.
+2. `analysis/latest_digest.md` — live performance analytics from the journal.
+3. `state/proposals.jsonl` — parameter sets the optimizer found that beat the
+   current config's out-of-sample Sharpe ratio by ≥0.15 with ≥8 OOS trades.
+4. `state/backtest_history.jsonl` (last 200 lines) — every trial tried, so
+   you know what the search space looks like and what's already been explored.
+5. `state/journal.jsonl` (last 100 lines) — recent live decisions in detail.
+6. `config.yaml` and relevant `fablebot/strategies/` code if a proposal
+   or the digest points at something specific.
+
+## Reading the optimizer output
+
+`proposals.jsonl` entries look like:
+```json
+{"instrument": "BTC", "proposed_params": {...}, "current_params": {...},
+ "oos_sharpe": 0.82, "baseline_oos_sharpe": 0.61, "improvement": 0.21,
+ "oos_trades": 14, "promoted": false}
+```
+
+A proposal is *worth acting on* only when **all** of these hold:
+- `oos_trades >= 8` (already filtered, but double-check)
+- `improvement >= 0.15` (already filtered)
+- The proposed params make strategic sense — a `lookback` of 11 with
+  `entry_z` of 2.9 on a 15m strategy is probably noise fitting, not signal.
+  Ask: does this param set have a plausible reason to work?
+- No contradictory evidence in the live journal (e.g., the instrument hasn't
+  been stopped out repeatedly in a pattern that a new param set wouldn't fix)
+- `scripts/validate.py` passes with the proposed params substituted in
+
+When you act on a proposal, edit `config.yaml` for that instrument's `params`
+block only. Do not touch other instruments, `param_bounds`, or risk settings.
 
 ## Burden of proof — when NOT to change anything
 
-The default outcome of a review is **no change**. Most days that is the
-correct outcome. Do not propose a change unless:
+The default outcome of a review is **no change**. Most days that is correct.
+Change nothing unless EITHER:
 
-- the pattern has at least 20 closed trades behind it (the digest flags
-  small samples), OR the fix is purely defensive (e.g., adding a cooldown)
-  and you can show via backtest it doesn't degrade historical results; and
-- a backtest over the available history supports the change — run
-  `python3 scripts/validate.py` before and after your edit and compare; and
-- the change is one coherent idea. One theme per review. Never bundle.
+- A proposal in `proposals.jsonl` meets all criteria above; OR
+- The live digest shows a systematic pattern (≥20 trades) that a specific,
+  validated fix addresses (re-entry cooldown, exit-z adjustment, etc.)
 
-A losing day is not evidence. A losing strategy across a real sample is.
-You exist to stop the bot from repeating *systematic* mistakes, not to make
-it flinch at noise — flinching at noise is the mistake the bot was built to
-avoid.
+A losing day is noise. An optimizer proposal with 8 OOS trades is weak signal.
+An optimizer proposal with 30+ OOS trades AND a plausible mechanism AND
+passing backtests is worth acting on. Only one theme per review — never bundle.
 
-## Patterns worth your attention (when the sample supports them)
+## Patterns in the optimizer history worth noting
 
-- Stop-outs followed by quick re-entries that also lose (whipsaw regimes):
-  consider a re-entry cooldown after a stop-out.
-- Near-miss stop-outs (trades that were well green, then stopped): consider
-  exit logic, not wider stops — stops are constitutional.
-- Shadow book consistently profitable: the correlation filter threshold may
-  be too tight. Shadow book consistently losing: it's earning its keep.
-- One strategy/instrument dragging the book across the whole sample: param
-  sweep via backtest, or propose pausing the instrument (set it out of the
-  config) with the evidence.
+Check `backtest_history.jsonl` for:
+- Params that the optimizer consistently finds to be better than baseline —
+  if many trials cluster around similar values, that region is robust.
+- Params that look great in-sample (high `is_sharpe`) but poor OOS — these
+  are overfit; ignore them regardless of `is_sharpe`.
+- Instruments where the optimizer has run many trials but found nothing better
+  than baseline — that's useful information too: the current params may be
+  near-optimal for this market regime.
 
 ## If you do change something
 
-1. Edit the code/config on this branch.
-2. Run `python3 scripts/validate.py` — everything must pass. Include the
-   before/after backtest output in your summary.
-3. Commit with a message that states the evidence, not just the change:
-   what the journal showed, sample size, backtest delta.
-4. Write your one-paragraph rationale to `analysis/review_summary.md` —
-   it becomes the PR body. If you changed nothing, write that and why;
-   "reviewed, no change warranted" is a successful review.
+1. Substitute the proposed params into `config.yaml` for that instrument only.
+2. Run `python3 scripts/validate.py` — everything must pass.
+3. Commit with a message that states: the OOS Sharpe improvement, the number
+   of OOS trades behind it, and why the params make strategic sense.
+4. Write a one-paragraph rationale to `analysis/review_summary.md` —
+   include the before/after backtest numbers from validate.py. This becomes
+   the PR body.
+5. In `state/proposals.jsonl`, mark the acted-on proposal with
+   `"promoted": true` (edit the file directly).
 
-You may NOT: touch anything `RISK_RULES.md` protects, add dependencies,
-change report schedules, or modify the journal/analytics code to make your
-own numbers look better. The journal is the record; it stays honest.
+If you changed nothing, write that to `analysis/review_summary.md` and
+explain why (e.g., "best proposal had only 6 OOS trades — below threshold").
+"Reviewed, no change warranted" is a successful review.
+
+You may NOT: touch `RISK_RULES.md`-protected settings, change `param_bounds`,
+add dependencies, or modify the journal/analytics/optimizer code to improve
+its own numbers. The history is the record; it stays honest.

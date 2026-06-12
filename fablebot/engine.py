@@ -231,7 +231,7 @@ class TradingEngine:
                 df = self.fetch(inst.symbol, inst.timeframe)
             except Exception:
                 continue
-            snapshots.append(build_snapshot(key, inst.name, df, self.strategies[key]))
+            snapshots.append(build_snapshot(key, inst.name, inst.symbol, df, self.strategies[key]))
             self.last_prices[key] = float(df["close"].iloc[-1])
         self.notifier.send("Morning briefing", morning_briefing(snapshots, self.broker))
 

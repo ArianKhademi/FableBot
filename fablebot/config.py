@@ -36,6 +36,10 @@ class InstrumentConfig:
     strategy: str
     timeframe: str
     params: dict = field(default_factory=dict)
+    # param_bounds: {param_name: [min, max]} — defines the optimizer's search
+    # space. Only params listed here are varied; the rest are frozen at their
+    # current value. Integer params (lookback, channels) are rounded to int.
+    param_bounds: dict = field(default_factory=dict)
 
 
 @dataclass
