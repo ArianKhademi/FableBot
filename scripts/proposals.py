@@ -84,11 +84,16 @@ def render(store: ProposalStore, history_path: Path) -> str:
         non_baseline = [t for t in trials if not t.get("is_baseline")]
         base_txt = f"{baseline['oos_sharpe']:.3f}" if baseline else "n/a"
         if non_baseline:
-            best = max(t["oos_sharpe"] for t in non_baseline)
-            avg = sum(t["oos_sharpe"] for t in non_baseline) / len(non_baseline)
+            best = max(non_baseline, key=lambda t: t["oos_sharpe"])
+            worst = min(non_baseline, key=lambda t: t["oos_sharpe"])
+            avg_oos = sum(t["oos_sharpe"] for t in non_baseline) / len(non_baseline)
+            baseline_sharpe = f"{baseline['oos_sharpe']:.3f}" if baseline else "n/a"
             lines.append(
-                f"- **{key}**: {len(trials)} trials (baseline OOS Sharpe {base_txt}, "
-                f"best found {best:.3f}, avg {avg:.3f})"
+                f"- **{key}**: {n} trials total "
+                f"(baseline OOS Sharpe: {baseline_sharpe}, "
+                f"best found: {best['oos_sharpe']:.3f}, "
+                f"avg: {avg_oos:.3f}, "
+                f"worst: {worst['oos_sharpe']:.3f})"
             )
         else:
             lines.append(f"- **{key}**: {len(trials)} trials (baseline only so far)")
