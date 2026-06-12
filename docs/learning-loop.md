@@ -115,10 +115,38 @@ explore the parameter space immediately:
 4. Logs **every trial** to `state/backtest_history.jsonl` — including the
    current config's baseline — so the history is always honest.
 5. When OOS Sharpe beats the baseline by ≥0.15 **and** there are ≥8 OOS
-   trades behind it, writes a proposal to `state/proposals.jsonl`.
+   trades behind it, the parameter set enters the **proposal pipeline**.
 
-The nightly reviewer reads both files. `scripts/proposals.py` renders a
-human-readable summary of what the optimizer found.
+### The proposal pipeline
+
+One good out-of-sample number can be luck. Proposals are staged, and every
+transition is an append-only event in `state/proposals.jsonl` — the full
+audit trail of what was tried, validated, rejected, and shipped:
+
+```
+candidate ──► validation ──► qualified ──► promoted   (reviewer shipped it)
+                        └──► rejected               (kept for the record)
+```
+
+- **candidate** — one walk-forward win over the baseline. Weak evidence;
+  the reviewer is forbidden from acting on these.
+- **validation** (automatic, interleaved with the search) — two harder tests:
+  1. *Regime robustness*: the candidate is re-run head-to-head against the
+     **current** params across 4 rolling time windows. It must win ≥75% of
+     them — an edge that only worked in one stretch of history isn't an edge.
+  2. *Perturbation*: the candidate's params are jittered ±10% five times and
+     re-tested. If the neighbours' median OOS Sharpe falls back below the
+     baseline, the "edge" was a knife-edge curve fit — rejected.
+- **qualified** — survived both. The only status the nightly reviewer may
+  act on, and even then it still needs strategic plausibility plus a
+  passing `scripts/validate.py`.
+- **promoted / rejected** — the reviewer records its verdict with
+  `python3 scripts/proposals.py --mark <id> promoted|rejected --reason "..."`,
+  so nothing silently resurfaces and the rejection reasons accumulate into
+  a map of which parameter regions are noise.
+
+`scripts/proposals.py` renders the live pipeline view; the nightly review
+writes it to `analysis/latest_proposals.md` for the reviewer.
 
 ### Walk-forward, not simple backtesting
 

@@ -16,27 +16,46 @@ under a constitution and a burden of proof.
 6. `config.yaml` and relevant `fablebot/strategies/` code if a proposal
    or the digest points at something specific.
 
-## Reading the optimizer output
+## The proposal pipeline
 
-`proposals.jsonl` entries look like:
-```json
-{"instrument": "BTC", "proposed_params": {...}, "current_params": {...},
- "oos_sharpe": 0.82, "baseline_oos_sharpe": 0.61, "improvement": 0.21,
- "oos_trades": 14, "promoted": false}
+Proposals move through stages (run `python3 scripts/proposals.py` for the
+pipeline view):
+
+```
+candidate -> [regime folds + perturbation tests] -> qualified -> promoted
+                                                 \-> rejected
 ```
 
-A proposal is *worth acting on* only when **all** of these hold:
-- `oos_trades >= 8` (already filtered, but double-check)
-- `improvement >= 0.15` (already filtered)
-- The proposed params make strategic sense — a `lookback` of 11 with
-  `entry_z` of 2.9 on a 15m strategy is probably noise fitting, not signal.
-  Ask: does this param set have a plausible reason to work?
-- No contradictory evidence in the live journal (e.g., the instrument hasn't
-  been stopped out repeatedly in a pattern that a new param set wouldn't fix)
-- `scripts/validate.py` passes with the proposed params substituted in
+- **candidate**: one walk-forward trial beat the baseline. Weak evidence.
+  NOT actionable — the optimizer will validate it on its own; leave it alone.
+- **qualified**: survived stage-two validation — beat the current params in
+  >= 75% of rolling regime folds AND its ±10%-jittered neighbours still beat
+  the baseline on median. **This is the only status you may act on.**
+- **rejected**: failed validation. Never act on these, but note the reasons —
+  repeated rejections in one parameter region tell you that region is noise.
+- **promoted**: already shipped in an earlier review.
 
-When you act on a proposal, edit `config.yaml` for that instrument's `params`
-block only. Do not touch other instruments, `param_bounds`, or risk settings.
+A **qualified** proposal is worth acting on only when ALL of these also hold:
+- The proposed params make strategic sense — ask: is there a plausible
+  market reason this works, or does it merely survive statistics?
+- No contradictory evidence in the live journal digest.
+- `scripts/validate.py` passes with the proposed params substituted in.
+
+When you act on one, edit `config.yaml` for that instrument's `params` block
+only. Do not touch other instruments, `param_bounds`, or risk settings. Then
+record the transition:
+
+```
+python3 scripts/proposals.py --mark <proposal_id> promoted --reason "shipped in PR"
+```
+
+If you decide a qualified proposal should NOT ship (implausible params,
+contradicting live evidence), mark it rejected with the reason — that keeps
+the pipeline honest and stops it resurfacing tomorrow:
+
+```
+python3 scripts/proposals.py --mark <proposal_id> rejected --reason "..."
+```
 
 ## Burden of proof — when NOT to change anything
 
