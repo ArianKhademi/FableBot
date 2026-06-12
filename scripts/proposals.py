@@ -104,6 +104,25 @@ def render(store: ProposalStore, history_path: Path) -> str:
         "High in-sample / low OOS Sharpe = overfit; the validation stage exists "
         "to catch what slips past the first filter.",
     ]
+
+    # ── pipeline totals (bottom line: easy to read after a long history) ──────
+    n_candidate = len(store.by_status(CANDIDATE))
+    n_qualified = len(store.by_status(QUALIFIED))
+    n_promoted = len(store.by_status(PROMOTED))
+    n_rejected = len(store.by_status(REJECTED))
+    n_validated = n_qualified + n_promoted + n_rejected  # completed the gate
+    n_passed = n_qualified + n_promoted                  # survived validation
+    pass_rate = (n_passed / n_validated * 100.0) if n_validated else 0.0
+    lines += [
+        "",
+        "## Pipeline totals",
+        f"- candidates awaiting validation: {n_candidate}",
+        f"- **validated (passed)**: {n_passed}  "
+        f"(qualified {n_qualified} + promoted {n_promoted})",
+        f"- **rejected (failed)**: {n_rejected}",
+        f"- validation pass rate: {pass_rate:.0f}% "
+        f"({n_passed}/{n_validated} that finished validation)",
+    ]
     return "\n".join(lines)
 
 
