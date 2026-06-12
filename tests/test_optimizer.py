@@ -9,12 +9,14 @@ from fablebot.optimizer import (
     ContinuousOptimizer,
     MIN_IMPROVEMENT,
     MIN_TRADES,
-    ProposalQueue,
     _round_param,
+    perturb_params,
     run_walk_forward,
     sample_params,
     sharpe_ratio,
+    validation_folds,
 )
+from fablebot.pipeline import CANDIDATE, ProposalStore
 from tests.conftest import make_ohlcv
 
 MR_INST = InstrumentConfig(
@@ -143,40 +145,28 @@ def test_baseline_flag(tmp_path):
     assert h.baseline("SPX")["is_baseline"] is True
 
 
-# ── ProposalQueue ────────────────────────────────────────────────────────────
+# ── validation building blocks ──────────────────────────────────────────────
 
-def test_proposal_queue_write_and_read_pending(tmp_path):
-    from fablebot.optimizer import Proposal
-    q = ProposalQueue(tmp_path / "proposals.jsonl")
-    p = Proposal(
-        instrument="BTC",
-        strategy="momentum_breakout",
-        timeframe="1h",
-        proposed_params={"entry_channel": 15},
-        current_params={"entry_channel": 20},
-        oos_sharpe=0.9,
-        baseline_oos_sharpe=0.6,
-        improvement=0.3,
-        oos_trades=12,
-    )
-    q.add(p)
-    pending = q.read_pending()
-    assert len(pending) == 1
-    assert pending[0]["improvement"] == pytest.approx(0.3)
+def test_validation_folds_cover_different_regimes():
+    df = make_ohlcv(np.linspace(100, 200, 400), freq="15min")
+    folds = validation_folds(df, n_folds=4)
+    assert len(folds) == 4
+    # Windows roll forward: each fold starts later than the previous
+    starts = [f.index[0] for f in folds]
+    assert starts == sorted(starts)
+    assert starts[0] != starts[-1]
+    # Each window is a real chunk, not the whole history
+    assert all(len(f) < len(df) for f in folds)
 
 
-def test_promoted_proposals_excluded_from_pending(tmp_path):
-    from fablebot.optimizer import Proposal
-    import json
-    path = tmp_path / "proposals.jsonl"
-    q = ProposalQueue(path)
-    p = Proposal("BTC", "mb", "1h", {}, {}, 0.9, 0.6, 0.3, 10)
-    q.add(p)
-    # Manually mark as promoted
-    data = json.loads(path.read_text())
-    data["promoted"] = True
-    path.write_text(json.dumps(data) + "\n")
-    assert q.read_pending() == []
+def test_perturb_params_stays_within_bounds_and_constraints():
+    rng = np.random.default_rng(3)
+    for _ in range(30):
+        p = perturb_params(dict(MB_INST.params), MB_INST, rng)
+        assert 10 <= p["entry_channel"] <= 40
+        assert p["exit_channel"] < p["entry_channel"]
+        assert 1.5 <= p["atr_stop_mult"] <= 4.0
+        assert p["atr_period"] == 14  # frozen params untouched
 
 
 # ── ContinuousOptimizer end-to-end ──────────────────────────────────────────
@@ -195,24 +185,24 @@ def test_optimizer_trial_one_logs_to_history(tmp_path):
     df = make_ohlcv(np.linspace(100, 200, 400), freq="15min")
     config = make_config_with(MR_INST)
     history = BacktestHistory(tmp_path / "hist.jsonl")
-    proposals = ProposalQueue(tmp_path / "proposals.jsonl")
+    proposals = ProposalStore(tmp_path / "proposals.jsonl")
 
     def fake_fetch(symbol, timeframe, days=None):
         return df
 
     opt = ContinuousOptimizer(config, history, proposals, fetch_fn=fake_fetch, seed=42)
-    trial = opt.trial_one(MR_INST)
-    # May be None if dedup fires on the first run (baseline + trial same params)
+    opt.trial_one(MR_INST)
     entries = history.read("SPX")
     assert len(entries) >= 1  # at least the baseline
 
 
-def test_optimizer_generates_proposal_when_oos_better(tmp_path):
-    """Force a scenario where OOS Sharpe exceeds baseline by > MIN_IMPROVEMENT."""
+def test_optimizer_candidates_enter_pipeline_and_get_validated(tmp_path):
+    """Low injected baseline -> trials become candidates -> validate_one
+    transitions them out of candidate status with a recorded verdict."""
     from fablebot.optimizer import Trial
     config = make_config_with(MR_INST)
     history = BacktestHistory(tmp_path / "hist.jsonl")
-    proposals = ProposalQueue(tmp_path / "proposals.jsonl")
+    proposals = ProposalStore(tmp_path / "proposals.jsonl")
 
     df = make_ohlcv(np.linspace(100, 200, 400), freq="15min")
 
@@ -220,22 +210,28 @@ def test_optimizer_generates_proposal_when_oos_better(tmp_path):
         return df
 
     opt = ContinuousOptimizer(config, history, proposals, fetch_fn=fake_fetch, seed=42)
-    # Inject a low baseline so the next real trial beats it
     fake_baseline = Trial(
         instrument="SPX", strategy="mean_reversion", timeframe="15m",
-        params=dict(MR_INST.params), is_sharpe=0.1, oos_sharpe=0.0,
+        params=dict(MR_INST.params), is_sharpe=0.1, oos_sharpe=-5.0,
         is_trades=10, oos_trades=10, is_bars=300, oos_bars=100,
         is_return_pct=1.0, oos_return_pct=-1.0, is_baseline=True,
     )
     history.log(fake_baseline)
 
-    # Run trials until we either get a proposal or exhaust patience
-    for _ in range(20):
+    for _ in range(25):
         opt.trial_one(MR_INST)
-        if proposals.read_pending():
+        if proposals.by_status(CANDIDATE):
             break
 
-    # With a 0.0 baseline and real backtests on a clean trend, we expect at
-    # least some proposals to emerge (not guaranteed in 20 trials but likely).
-    # The test is really checking the proposal plumbing works without error.
-    assert isinstance(proposals.read_pending(), list)
+    candidates = proposals.by_status(CANDIDATE)
+    if candidates:  # candidate emergence depends on sampled params hitting trades
+        verdict = opt.validate_one()
+        assert verdict is not None
+        assert "reason" in verdict
+        # The candidate moved on: either qualified or rejected, never stuck
+        state = proposals.latest()[candidates[0]["proposal_id"]]
+        assert state["status"] in ("qualified", "rejected")
+    # Plumbing check regardless: validate_one with no candidates is a no-op
+    while opt.validate_one() is not None:
+        pass
+    assert proposals.by_status(CANDIDATE) == []

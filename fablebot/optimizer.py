@@ -6,10 +6,13 @@ Every trial:
   2. splits the instrument's full history 75/25 train/OOS
   3. runs the backtest on each half
   4. logs the result to state/backtest_history.jsonl
-  5. if OOS Sharpe > baseline + MIN_IMPROVEMENT: adds to state/proposals.jsonl
+  5. if OOS Sharpe > baseline + MIN_IMPROVEMENT: enters the pipeline as a
+     *candidate* (see fablebot.pipeline)
 
-The nightly reviewer reads both files so it can see everything that has
-been tried and promote genuinely better configurations.
+Candidates then face stage-two validation (interleaved with the search):
+regime robustness across rolling time folds, plus a parameter-perturbation
+test. Survivors become *qualified* — the only status the nightly reviewer
+is allowed to act on. Failures are *rejected* but stay in the log.
 
 Nothing here ever touches config.yaml or any running code. It only
 produces evidence.
@@ -29,6 +32,7 @@ import numpy as np
 
 from .backtest import run_backtest
 from .config import InstrumentConfig
+from .pipeline import CANDIDATE, Proposal, ProposalStore, QUALIFIED, REJECTED
 from .strategies import build_strategy
 
 # Walk-forward split: last OUT_OF_SAMPLE_FRAC of bars held out for validation.
@@ -51,6 +55,19 @@ OPTIMIZER_FETCH_DAYS = {"15m": 59, "1h": 700, "4h": 700}
 
 # How many seconds to sleep between trials so the optimizer doesn't pin a CPU.
 TRIAL_SLEEP = 1.5
+
+# ── validation stage (candidate -> qualified/rejected) ───────────────────────
+
+# Rolling time windows the candidate is re-tested on. It must beat the
+# CURRENT params (not just the full-history baseline) in most of them.
+VALIDATION_FOLDS = 4
+MIN_FOLDS_WON_FRAC = 0.75
+MIN_VALID_FOLDS = 3
+
+# Perturbation test: jitter each tunable param ±10% and re-run walk-forward.
+# A real edge survives nudging; a knife-edge overfit collapses.
+PERTURBATIONS = 5
+PERTURB_FRAC = 0.10
 
 
 def _utcnow() -> str:
@@ -85,21 +102,6 @@ class Trial:
     oos_return_pct: float
     timestamp: str = field(default_factory=_utcnow)
     is_baseline: bool = False  # True when this trial records the current config
-
-
-@dataclass
-class Proposal:
-    instrument: str
-    strategy: str
-    timeframe: str
-    proposed_params: dict
-    current_params: dict
-    oos_sharpe: float
-    baseline_oos_sharpe: float
-    improvement: float
-    oos_trades: int
-    timestamp: str = field(default_factory=_utcnow)
-    promoted: bool = False  # set True once the reviewer acts on it
 
 
 class BacktestHistory:
@@ -140,25 +142,6 @@ class BacktestHistory:
             if t.get("is_baseline"):
                 return t
         return None
-
-
-class ProposalQueue:
-    def __init__(self, path: Path):
-        self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-
-    def add(self, proposal: Proposal) -> None:
-        with self.path.open("a") as fh:
-            fh.write(json.dumps(asdict(proposal)) + "\n")
-
-    def read_pending(self) -> list[dict]:
-        if not self.path.exists():
-            return []
-        return [
-            json.loads(l)
-            for l in self.path.read_text().splitlines()
-            if l.strip() and not json.loads(l).get("promoted")
-        ]
 
 
 def _round_param(key: str, val: float) -> float | int:
@@ -225,12 +208,117 @@ def run_walk_forward(
     )
 
 
+def validation_folds(df, n_folds: int = VALIDATION_FOLDS):
+    """Rolling time windows covering the history: each ~55% of the data,
+    stepped forward so the candidate is tested across different regimes."""
+    window = int(len(df) * 0.55)
+    if window < 50 or n_folds < 2:
+        return [df]
+    step = max((len(df) - window) // (n_folds - 1), 1)
+    return [df.iloc[i * step : i * step + window] for i in range(n_folds)]
+
+
+def perturb_params(
+    params: dict, inst: InstrumentConfig, rng: np.random.Generator, frac: float = PERTURB_FRAC
+) -> dict:
+    """Jitter each tunable param by ±frac, clipped to its bounds."""
+    out = dict(params)
+    for key, bounds in inst.param_bounds.items():
+        lo, hi = float(bounds[0]), float(bounds[1])
+        jittered = float(out[key]) * (1.0 + rng.uniform(-frac, frac))
+        out[key] = _round_param(key, min(max(jittered, lo), hi))
+    if "exit_channel" in out and "entry_channel" in out:
+        out["exit_channel"] = max(min(out["exit_channel"], out["entry_channel"] - 2), 2)
+    if "fast_ema" in out and "slow_ema" in out:
+        out["fast_ema"] = max(min(out["fast_ema"], out["slow_ema"] - 5), 5)
+    return out
+
+
+def validate_candidate(
+    df,
+    inst: InstrumentConfig,
+    candidate_params: dict,
+    current_params: dict,
+    rng: np.random.Generator,
+    risk_per_trade: float = 0.01,
+) -> dict:
+    """Stage-two testing for a candidate proposal. Returns a verdict dict:
+    {qualified: bool, folds_won, folds_valid, fold_details,
+     perturbed_sharpes, median_perturbed_sharpe, baseline_oos_sharpe, reason}.
+
+    Test 1 — regime robustness: across rolling time windows, the candidate
+    must beat the *current* params head-to-head in >= 75% of valid folds.
+    Test 2 — perturbation: the candidate's params jittered ±10% must still
+    beat the current params' full-history OOS Sharpe on median. An edge that
+    only exists at exact parameter values is curve-fitting, not signal.
+    """
+    folds_won = 0
+    folds_valid = 0
+    fold_details = []
+    for fold in validation_folds(df):
+        cand = run_walk_forward(fold, inst, candidate_params, risk_per_trade)
+        curr = run_walk_forward(fold, inst, current_params, risk_per_trade)
+        if cand is None or curr is None:
+            fold_details.append({"skipped": True})
+            continue
+        folds_valid += 1
+        won = bool(cand.oos_sharpe > curr.oos_sharpe)
+        folds_won += won
+        fold_details.append(
+            {"candidate_oos": cand.oos_sharpe, "current_oos": curr.oos_sharpe, "won": won}
+        )
+
+    baseline_full = run_walk_forward(df, inst, current_params, risk_per_trade)
+    baseline_oos = baseline_full.oos_sharpe if baseline_full else float("-inf")
+
+    perturbed_sharpes = []
+    for _ in range(PERTURBATIONS):
+        jittered = perturb_params(candidate_params, inst, rng)
+        trial = run_walk_forward(df, inst, jittered, risk_per_trade)
+        if trial is not None:
+            perturbed_sharpes.append(trial.oos_sharpe)
+    median_perturbed = float(np.median(perturbed_sharpes)) if perturbed_sharpes else float("-inf")
+
+    folds_ok = (
+        folds_valid >= MIN_VALID_FOLDS
+        and folds_won >= math.ceil(MIN_FOLDS_WON_FRAC * folds_valid)
+    )
+    perturb_ok = median_perturbed > baseline_oos
+
+    if not folds_ok:
+        reason = (
+            f"regime test failed: beat current params in {folds_won}/{folds_valid} folds "
+            f"(need >= {MIN_FOLDS_WON_FRAC:.0%} of >= {MIN_VALID_FOLDS})"
+        )
+    elif not perturb_ok:
+        reason = (
+            f"perturbation test failed: median jittered OOS Sharpe {median_perturbed:.3f} "
+            f"<= baseline {baseline_oos:.3f} — edge collapses when params are nudged"
+        )
+    else:
+        reason = (
+            f"won {folds_won}/{folds_valid} folds; median jittered OOS Sharpe "
+            f"{median_perturbed:.3f} > baseline {baseline_oos:.3f}"
+        )
+
+    return {
+        "qualified": folds_ok and perturb_ok,
+        "folds_won": folds_won,
+        "folds_valid": folds_valid,
+        "fold_details": fold_details,
+        "perturbed_sharpes": [round(s, 4) for s in perturbed_sharpes],
+        "median_perturbed_sharpe": median_perturbed,
+        "baseline_oos_sharpe": baseline_oos,
+        "reason": reason,
+    }
+
+
 class ContinuousOptimizer:
     def __init__(
         self,
         config,
         history: BacktestHistory,
-        proposals: ProposalQueue,
+        proposals: ProposalStore,
         fetch_fn=None,
         seed: Optional[int] = None,
     ):
@@ -297,7 +385,6 @@ class ContinuousOptimizer:
             trial.oos_trades >= MIN_TRADES
             and trial.is_trades >= MIN_TRADES
             and trial.oos_sharpe > baseline_sharpe + MIN_IMPROVEMENT
-            and trial.oos_sharpe > trial.oos_sharpe * 0.0  # always true; placeholder for future filters
         ):
             proposal = Proposal(
                 instrument=inst.key,
@@ -310,14 +397,60 @@ class ContinuousOptimizer:
                 improvement=trial.oos_sharpe - baseline_sharpe,
                 oos_trades=trial.oos_trades,
             )
-            self.proposals.add(proposal)
+            self.proposals.add_candidate(proposal)
             print(
-                f"[optimizer] PROPOSAL: {inst.key} OOS Sharpe "
+                f"[optimizer] CANDIDATE: {inst.key} OOS Sharpe "
                 f"{trial.oos_sharpe:.3f} vs baseline {baseline_sharpe:.3f} "
-                f"(+{trial.oos_sharpe - baseline_sharpe:.3f}, {trial.oos_trades} OOS trades)",
+                f"(+{trial.oos_sharpe - baseline_sharpe:.3f}, {trial.oos_trades} OOS trades) "
+                f"— queued for validation",
                 flush=True,
             )
         return trial
+
+    def validate_one(self) -> Optional[dict]:
+        """Pick the oldest pending candidate and run the stage-two validation:
+        regime folds + perturbation. Transitions it to qualified or rejected.
+        Returns the verdict, or None if there was nothing to validate."""
+        candidates = self.proposals.by_status(CANDIDATE)
+        if not candidates:
+            return None
+        cand = sorted(candidates, key=lambda c: c["ts"])[0]
+        key = cand["instrument"]
+        inst = self.config.instruments.get(key)
+        if inst is None:
+            self.proposals.set_status(
+                cand["proposal_id"], REJECTED, reason="instrument no longer configured"
+            )
+            return None
+        try:
+            df = self._get_data(inst)
+        except Exception as exc:
+            print(f"[optimizer] validation deferred for {key}: data fetch failed ({exc})", flush=True)
+            return None
+
+        verdict = validate_candidate(
+            df,
+            inst,
+            cand["proposed_params"],
+            cand["current_params"],
+            self.rng,
+            self.config.account.risk_per_trade,
+        )
+        status = QUALIFIED if verdict["qualified"] else REJECTED
+        self.proposals.set_status(
+            cand["proposal_id"],
+            status,
+            reason=verdict["reason"],
+            folds_won=verdict["folds_won"],
+            folds_valid=verdict["folds_valid"],
+            median_perturbed_sharpe=verdict["median_perturbed_sharpe"],
+        )
+        print(
+            f"[optimizer] {status.upper()}: {key} proposal {cand['proposal_id']} — "
+            f"{verdict['reason']}",
+            flush=True,
+        )
+        return verdict
 
     def run_forever(self, sleep: float = TRIAL_SLEEP) -> None:
         instruments = list(self.config.instruments.values())
@@ -334,6 +467,9 @@ class ContinuousOptimizer:
         while True:
             inst = tunable[idx % len(tunable)]
             idx += 1
+            # Interleave: validate one pending candidate per pass so the
+            # pipeline drains while the search keeps exploring.
+            self.validate_one()
             trial = self.trial_one(inst)
             if trial:
                 print(

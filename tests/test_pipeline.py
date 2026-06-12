@@ -1,0 +1,146 @@
+"""Proposal pipeline: append-only store, status transitions, validation gates."""
+
+import numpy as np
+import pytest
+
+from fablebot.config import InstrumentConfig
+from fablebot.optimizer import validate_candidate
+from fablebot.pipeline import (
+    CANDIDATE,
+    PROMOTED,
+    QUALIFIED,
+    REJECTED,
+    Proposal,
+    ProposalStore,
+    proposal_id,
+)
+from tests.conftest import make_ohlcv
+
+
+def make_proposal(**overrides):
+    base = dict(
+        instrument="BTC",
+        strategy="momentum_breakout",
+        timeframe="1h",
+        proposed_params={"entry_channel": 15, "exit_channel": 8},
+        current_params={"entry_channel": 20, "exit_channel": 10},
+        oos_sharpe=0.9,
+        baseline_oos_sharpe=0.6,
+        improvement=0.3,
+        oos_trades=12,
+    )
+    base.update(overrides)
+    return Proposal(**base)
+
+
+# ── store mechanics ──────────────────────────────────────────────────────────
+
+def test_candidate_enters_as_candidate(tmp_path):
+    store = ProposalStore(tmp_path / "p.jsonl")
+    pid = store.add_candidate(make_proposal())
+    assert store.by_status(CANDIDATE)[0]["proposal_id"] == pid
+    assert store.by_status(QUALIFIED) == []
+
+
+def test_duplicate_candidates_not_readded(tmp_path):
+    store = ProposalStore(tmp_path / "p.jsonl")
+    store.add_candidate(make_proposal())
+    store.add_candidate(make_proposal())  # identical params -> same id
+    assert len(store.latest()) == 1
+
+
+def test_status_transitions_keep_data_and_history(tmp_path):
+    store = ProposalStore(tmp_path / "p.jsonl")
+    pid = store.add_candidate(make_proposal())
+    store.set_status(pid, QUALIFIED, reason="won 4/4 folds")
+    store.set_status(pid, PROMOTED, reason="shipped in PR #9")
+
+    state = store.latest()[pid]
+    assert state["status"] == PROMOTED
+    assert state["oos_sharpe"] == pytest.approx(0.9)  # original data preserved
+    # Full audit trail: candidate -> qualified -> promoted
+    statuses = [e["status"] for e in store.history(pid)]
+    assert statuses == [CANDIDATE, QUALIFIED, PROMOTED]
+
+
+def test_unknown_status_or_id_rejected(tmp_path):
+    store = ProposalStore(tmp_path / "p.jsonl")
+    pid = store.add_candidate(make_proposal())
+    with pytest.raises(ValueError):
+        store.set_status(pid, "shipped")
+    with pytest.raises(KeyError):
+        store.set_status("nonexistent", QUALIFIED)
+
+
+def test_proposal_id_is_deterministic():
+    a = proposal_id("BTC", {"entry_channel": 15})
+    b = proposal_id("BTC", {"entry_channel": 15})
+    c = proposal_id("BTC", {"entry_channel": 16})
+    assert a == b != c
+
+
+# ── validation gates ─────────────────────────────────────────────────────────
+
+TF_INST = InstrumentConfig(
+    key="GOLD",
+    symbol="GC=F",
+    name="Gold",
+    strategy="trend_following",
+    timeframe="4h",
+    params={"fast_ema": 20, "slow_ema": 50, "atr_period": 14, "atr_stop_mult": 3.0},
+    param_bounds={"fast_ema": [10, 30], "slow_ema": [30, 80], "atr_stop_mult": [2.0, 5.0]},
+)
+
+
+def trending_df(n=500, seed=5):
+    rng = np.random.default_rng(seed)
+    closes = 100 + np.cumsum(rng.normal(0.15, 1.0, n))  # drift + noise
+    return make_ohlcv(closes, freq="4h")
+
+
+def test_validate_candidate_returns_complete_verdict():
+    df = trending_df()
+    rng = np.random.default_rng(0)
+    verdict = validate_candidate(
+        df, TF_INST,
+        candidate_params={**TF_INST.params, "fast_ema": 15},
+        current_params=dict(TF_INST.params),
+        rng=rng,
+    )
+    assert set(verdict) >= {
+        "qualified", "folds_won", "folds_valid", "perturbed_sharpes",
+        "median_perturbed_sharpe", "baseline_oos_sharpe", "reason",
+    }
+    assert verdict["folds_valid"] >= 3
+    assert len(verdict["perturbed_sharpes"]) > 0
+
+
+def test_identical_params_cannot_qualify():
+    """A candidate identical to the current params can't beat itself in any
+    fold, so the regime test must reject it."""
+    df = trending_df()
+    rng = np.random.default_rng(0)
+    verdict = validate_candidate(
+        df, TF_INST,
+        candidate_params=dict(TF_INST.params),
+        current_params=dict(TF_INST.params),
+        rng=rng,
+    )
+    assert verdict["qualified"] is False
+    assert verdict["folds_won"] == 0
+    assert "regime test failed" in verdict["reason"]
+
+
+def test_validation_records_fold_details():
+    df = trending_df()
+    rng = np.random.default_rng(1)
+    verdict = validate_candidate(
+        df, TF_INST,
+        candidate_params={**TF_INST.params, "fast_ema": 12, "slow_ema": 40},
+        current_params=dict(TF_INST.params),
+        rng=rng,
+    )
+    real_folds = [f for f in verdict["fold_details"] if not f.get("skipped")]
+    assert len(real_folds) == verdict["folds_valid"]
+    for fold in real_folds:
+        assert "candidate_oos" in fold and "current_oos" in fold

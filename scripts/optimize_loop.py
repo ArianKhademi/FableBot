@@ -4,8 +4,10 @@
 Runs forever, round-robins through all instruments that have param_bounds,
 samples random parameter sets, validates them out-of-sample, and logs
 every trial to state/backtest_history.jsonl. Promising configurations
-(OOS Sharpe > baseline + 0.15, >= 8 OOS trades) go to state/proposals.jsonl
-for the nightly reviewer.
+(OOS Sharpe > baseline + 0.15, >= 8 OOS trades) enter the proposal pipeline
+as candidates; each loop pass also validates one pending candidate
+(regime folds + perturbation test) and marks it qualified or rejected.
+Only qualified proposals reach the nightly reviewer.
 
   python3 scripts/optimize_loop.py
   python3 scripts/optimize_loop.py --sleep 3   # slower, less CPU
@@ -22,12 +24,8 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from fablebot.config import load_config
-from fablebot.optimizer import (
-    BacktestHistory,
-    ContinuousOptimizer,
-    ProposalQueue,
-    TRIAL_SLEEP,
-)
+from fablebot.optimizer import BacktestHistory, ContinuousOptimizer, TRIAL_SLEEP
+from fablebot.pipeline import ProposalStore
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -49,7 +47,7 @@ def main() -> None:
         config.instruments = {args.instrument: config.instruments[args.instrument]}
 
     history = BacktestHistory(args.history)
-    proposals = ProposalQueue(args.proposals)
+    proposals = ProposalStore(args.proposals)
     optimizer = ContinuousOptimizer(config, history, proposals)
 
     try:
