@@ -92,7 +92,11 @@ TF_INST = InstrumentConfig(
 )
 
 
-def trending_df(n=500, seed=5):
+def trending_df(n=1000, seed=5):
+    # Non-overlapping purged folds carve the history into VALIDATION_FOLDS
+    # contiguous blocks; each block must still hold enough bars to warm up a
+    # slow_ema=50 strategy and run a 75/25 walk-forward, so the fixture is
+    # sized so all four folds stay valid.
     rng = np.random.default_rng(seed)
     closes = 100 + np.cumsum(rng.normal(0.15, 1.0, n))  # drift + noise
     return make_ohlcv(closes, freq="4h")
@@ -144,3 +148,57 @@ def test_validation_records_fold_details():
     assert len(real_folds) == verdict["folds_valid"]
     for fold in real_folds:
         assert "candidate_oos" in fold and "current_oos" in fold
+
+
+# ── held-out confirmation (selection and validation on separate data) ────────
+
+def _heldout_scenario():
+    """A candidate that clears every in-sample stage (folds 4/4, stable jitter,
+    beats baseline) on a clean uptrend, plus two holdouts: a continuation trend
+    it survives and a rally-then-crash it does not. Only the holdout differs, so
+    it is provably the binding gate. The steadier slow EMA is the candidate; the
+    choppier fast EMA is the incumbent."""
+    candidate = dict(TF_INST.params)                       # fast 20 / slow 50
+    current = {**TF_INST.params, "fast_ema": 10, "slow_ema": 20}
+    search = make_ohlcv(100 + np.cumsum(np.random.default_rng(3).normal(0.18, 0.7, 1100)), freq="4h")
+    start = float(search["close"].iloc[-1])
+    favorable = make_ohlcv(
+        start + np.cumsum(np.random.default_rng(20).normal(0.18, 0.7, 420)), freq="4h"
+    )
+    r = np.random.default_rng(21)
+    up = np.cumsum(r.normal(0.5, 0.8, 220))
+    crash = up[-1] + np.cumsum(r.normal(-0.9, 0.8, 220))
+    adverse = make_ohlcv(start + np.concatenate([up, crash]), freq="4h")
+    return candidate, current, search, favorable, adverse
+
+
+def test_in_sample_pass_qualifies_without_a_holdout():
+    candidate, current, search, _, _ = _heldout_scenario()
+    v = validate_candidate(search, TF_INST, candidate, current, np.random.default_rng(0))
+    assert v["qualified"] is True
+    assert v["folds_won"] == v["folds_valid"]  # 4/4, a clean in-sample pass
+    assert v["holdout_checked"] is False
+
+
+def test_holdout_confirms_a_genuine_edge():
+    candidate, current, search, favorable, _ = _heldout_scenario()
+    v = validate_candidate(
+        search, TF_INST, candidate, current, np.random.default_rng(0), holdout_df=favorable
+    )
+    assert v["holdout_checked"] is True
+    assert v["holdout_candidate_sharpe"] > v["holdout_current_sharpe"]
+    assert v["qualified"] is True
+
+
+def test_holdout_rejects_an_edge_that_does_not_survive_unseen_data():
+    """Identical in-sample result (folds 4/4); only the holdout changes. The
+    candidate that wins in-sample but loses on the embargoed slice is rejected —
+    the gate selection bias cannot game."""
+    candidate, current, search, _, adverse = _heldout_scenario()
+    v = validate_candidate(
+        search, TF_INST, candidate, current, np.random.default_rng(0), holdout_df=adverse
+    )
+    assert v["folds_won"] == v["folds_valid"]  # in-sample still passes 4/4
+    assert v["holdout_candidate_sharpe"] < v["holdout_current_sharpe"]
+    assert v["qualified"] is False
+    assert "held-out" in v["reason"]
