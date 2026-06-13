@@ -57,6 +57,34 @@ the pipeline honest and stops it resurfacing tomorrow:
 python3 scripts/proposals.py --mark <proposal_id> rejected --reason "..."
 ```
 
+## When the qualified queue is large (≥5 proposals)
+
+If there are 5 or more qualified proposals, do this analysis **before** picking
+one to ship — include it in the PR body whether or not you ship anything:
+
+1. **Group by instrument.** List how many qualified proposals exist per
+   instrument (e.g. "BTC: 8, GOLD: 3, SPX: 1").
+
+2. **Cluster the parameters.** For each instrument with ≥3 qualified proposals,
+   identify which parameters are consistently different from the current config.
+   Example: "All 8 BTC proposals have entry_channel in 12–16 vs. current 20.
+   The optimizer strongly and repeatedly prefers shorter channels for BTC."
+   A tight cluster is stronger evidence than a single high-OOS outlier.
+
+3. **Flag anomalies.** If one instrument has ≫ more qualified proposals than
+   the others, it likely means the current config for that instrument is
+   significantly mis-tuned for the current regime — note this explicitly.
+
+4. **Still ship only one.** After the analysis, pick the single proposal with
+   the best combination of: highest OOS Sharpe improvement, most OOS trades,
+   tightest parameter cluster (if applicable), and clearest strategic
+   rationale. Ship that one. The rest stay in the queue — they will be
+   reviewed in future nights, accumulating more evidence as the optimizer
+   continues running.
+
+A large queue is useful signal, not a mandate to batch changes. Batching
+makes attribution impossible: if results improve or worsen, you won't know why.
+
 ## Burden of proof — when NOT to change anything
 
 The default outcome of a review is **no change**. Most days that is correct.
