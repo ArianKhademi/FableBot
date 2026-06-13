@@ -14,6 +14,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from fablebot.optimizer import MIN_IMPROVEMENT, MIN_TRADES
 from fablebot.pipeline import CANDIDATE, PROMOTED, QUALIFIED, REJECTED, ProposalStore
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -89,7 +90,7 @@ def render(store: ProposalStore, history_path: Path) -> str:
             avg_oos = sum(t["oos_sharpe"] for t in non_baseline) / len(non_baseline)
             baseline_sharpe = f"{baseline['oos_sharpe']:.3f}" if baseline else "n/a"
             lines.append(
-                f"- **{key}**: {n} trials total "
+                f"- **{key}**: {len(trials)} trials total "
                 f"(baseline OOS Sharpe: {baseline_sharpe}, "
                 f"best found: {best['oos_sharpe']:.3f}, "
                 f"avg: {avg_oos:.3f}, "
@@ -105,23 +106,34 @@ def render(store: ProposalStore, history_path: Path) -> str:
         "to catch what slips past the first filter.",
     ]
 
-    # ── pipeline totals (bottom line: easy to read after a long history) ──────
+    # ── funnel totals (reconciles trials -> candidates -> validated) ──────────
+    n_trials = len(history)
     n_candidate = len(store.by_status(CANDIDATE))
     n_qualified = len(store.by_status(QUALIFIED))
     n_promoted = len(store.by_status(PROMOTED))
     n_rejected = len(store.by_status(REJECTED))
+    n_proposals = n_candidate + n_qualified + n_promoted + n_rejected  # entered pipeline
+    n_not_candidate = n_trials - n_proposals          # logged but never qualified as candidate
     n_validated = n_qualified + n_promoted + n_rejected  # completed the gate
     n_passed = n_qualified + n_promoted                  # survived validation
     pass_rate = (n_passed / n_validated * 100.0) if n_validated else 0.0
+    trial_rate = (n_passed / n_trials * 100.0) if n_trials else 0.0
     lines += [
         "",
-        "## Pipeline totals",
-        f"- candidates awaiting validation: {n_candidate}",
-        f"- **validated (passed)**: {n_passed}  "
-        f"(qualified {n_qualified} + promoted {n_promoted})",
-        f"- **rejected (failed)**: {n_rejected}",
-        f"- validation pass rate: {pass_rate:.0f}% "
-        f"({n_passed}/{n_validated} that finished validation)",
+        "## Funnel totals",
+        "Each random trial is logged to history; it only enters the pipeline as a",
+        f"*candidate* if it beats baseline OOS Sharpe by >= {MIN_IMPROVEMENT} with "
+        f">= {MIN_TRADES} trades in BOTH halves. Most trials never clear that bar.",
+        "",
+        f"- trials run: {n_trials}",
+        f"  - didn't become candidates: {n_not_candidate}  "
+        f"(failed the entry bar — never entered the pipeline)",
+        f"  - became candidates: {n_proposals}",
+        f"      - **validated (passed)**: {n_passed}  (qualified {n_qualified} + promoted {n_promoted})",
+        f"      - **rejected (failed)**: {n_rejected}",
+        f"      - awaiting validation: {n_candidate}",
+        f"- candidate -> qualified pass rate: {pass_rate:.0f}% ({n_passed}/{n_validated} validated)",
+        f"- overall trial -> qualified rate: {trial_rate:.1f}% ({n_passed}/{n_trials})",
     ]
     return "\n".join(lines)
 
