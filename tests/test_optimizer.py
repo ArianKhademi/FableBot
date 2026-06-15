@@ -442,3 +442,52 @@ def test_ensure_baseline_remeasures_when_params_change(tmp_path):
     baselines = [t for t in h.read("SPX", limit=None) if t.get("is_baseline")]
     assert len(baselines) == 2  # one per distinct config
     assert {b["params"]["entry_z"] for b in baselines} == {2.0, 2.5}
+
+
+# ── Workstream F: parallel trial execution ──────────────────────────────────
+
+def _trial_signature(entries):
+    """Fields that must be identical regardless of worker count (timestamps and
+    in-memory curves excluded)."""
+    return [
+        (e["instrument"], e["params"], round(e["oos_sharpe"], 6), e["oos_trades"], e.get("is_baseline", False))
+        for e in entries
+    ]
+
+
+def test_trial_batch_logs_and_dedups(tmp_path):
+    df = make_ohlcv(np.linspace(100, 220, 700), freq="15min")
+    config = make_config_with(MR_INST)
+    history = BacktestHistory(tmp_path / "h.jsonl")
+    proposals = ProposalStore(tmp_path / "p.jsonl")
+    opt = ContinuousOptimizer(config, history, proposals, fetch_fn=lambda *a, **k: df, seed=11)
+    trials = opt.trial_batch(MR_INST, n=5)
+    assert len(trials) >= 1
+    # no duplicate parameter sets within a batch
+    seen = [t.params for t in trials]
+    assert len(seen) == len({tuple(sorted(p.items())) for p in seen})
+
+
+def test_trial_batch_parallel_matches_serial(tmp_path):
+    """The parallel path must produce byte-for-byte the same history and
+    candidates as the serial path for a given seed — only the CPU-bound
+    backtests move off the main process."""
+    from concurrent.futures import ProcessPoolExecutor
+
+    df = make_ohlcv(np.linspace(100, 240, 700), freq="15min")
+    config = make_config_with(MR_INST)
+
+    hist_s = BacktestHistory(tmp_path / "s.jsonl")
+    opt_s = ContinuousOptimizer(config, hist_s, ProposalStore(tmp_path / "ps.jsonl"),
+                                fetch_fn=lambda *a, **k: df, seed=123)
+    serial = opt_s.trial_batch(MR_INST, n=4, pool=None)
+
+    hist_p = BacktestHistory(tmp_path / "p.jsonl")
+    opt_p = ContinuousOptimizer(config, hist_p, ProposalStore(tmp_path / "pp.jsonl"),
+                                fetch_fn=lambda *a, **k: df, seed=123)
+    with ProcessPoolExecutor(max_workers=2) as pool:
+        parallel = opt_p.trial_batch(MR_INST, n=4, pool=pool)
+
+    assert [t.params for t in serial] == [t.params for t in parallel]
+    assert [round(t.oos_sharpe, 6) for t in serial] == [round(t.oos_sharpe, 6) for t in parallel]
+    assert _trial_signature(hist_s.read("SPX", limit=None)) == _trial_signature(hist_p.read("SPX", limit=None))

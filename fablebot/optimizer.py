@@ -27,7 +27,9 @@ from __future__ import annotations
 
 import json
 import math
+import os
 import time
+from concurrent.futures import ProcessPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -511,6 +513,14 @@ def validate_candidate(
     }
 
 
+def _wf_worker(args):
+    """Top-level (picklable) wrapper so backtests can run in worker processes.
+    Pure: it only reads its inputs and returns a Trial, so the result is
+    identical regardless of which process computes it."""
+    search_df, inst, params, risk = args
+    return run_walk_forward(search_df, inst, params, risk)
+
+
 class ContinuousOptimizer:
     def __init__(
         self,
@@ -583,57 +593,90 @@ class ContinuousOptimizer:
         dsr = deflated_sharpe_ratio(returns, n_trials, sr_std_perbar)
         return dsr >= DSR_THRESHOLD
 
-    def trial_one(self, inst: InstrumentConfig) -> Optional[Trial]:
-        """Run one random trial for an instrument. Returns the Trial or None."""
-        if not inst.param_bounds:
-            return None
-        try:
-            df = self._get_data(inst)
-        except Exception as exc:
-            print(f"[optimizer] {inst.key}: data fetch failed ({exc})", flush=True)
-            return None
-
-        # Selection runs on the search slice only; the holdout tail is reserved
-        # for held-out confirmation in validate_one and is never sampled on.
-        search_df, _ = split_search_holdout(df)
-        baseline_sharpe = self._ensure_baseline(inst, search_df)
-        params = sample_params(inst, self.rng)
-
-        if self.history.already_tried(inst.key, params):
-            return None
-
-        trial = run_walk_forward(search_df, inst, params, self.config.account.risk_per_trade)
-        if trial is None:
-            return None
-
-        self.history.log(trial)
-
-        if (
+    def _maybe_candidate(self, inst: InstrumentConfig, trial: Trial, baseline_sharpe: float) -> bool:
+        """Apply the entry gate to a freshly-logged trial; enqueue a candidate
+        if it clears MIN_TRADES, beats the baseline by MIN_IMPROVEMENT, and
+        survives the deflated-Sharpe correction. Returns whether it qualified."""
+        if not (
             trial.oos_trades >= MIN_TRADES
             and trial.is_trades >= MIN_TRADES
             and trial.oos_sharpe > baseline_sharpe + MIN_IMPROVEMENT
             and self._passes_deflated_sharpe(inst, trial)
         ):
-            proposal = Proposal(
+            return False
+        self.proposals.add_candidate(
+            Proposal(
                 instrument=inst.key,
                 strategy=inst.strategy,
                 timeframe=inst.timeframe,
-                proposed_params=params,
+                proposed_params=dict(trial.params),
                 current_params=dict(inst.params),
                 oos_sharpe=trial.oos_sharpe,
                 baseline_oos_sharpe=baseline_sharpe,
                 improvement=trial.oos_sharpe - baseline_sharpe,
                 oos_trades=trial.oos_trades,
             )
-            self.proposals.add_candidate(proposal)
-            print(
-                f"[optimizer] CANDIDATE: {inst.key} OOS Sharpe "
-                f"{trial.oos_sharpe:.3f} vs baseline {baseline_sharpe:.3f} "
-                f"(+{trial.oos_sharpe - baseline_sharpe:.3f}, {trial.oos_trades} OOS trades) "
-                f"— queued for validation",
-                flush=True,
-            )
-        return trial
+        )
+        print(
+            f"[optimizer] CANDIDATE: {inst.key} OOS Sharpe "
+            f"{trial.oos_sharpe:.3f} vs baseline {baseline_sharpe:.3f} "
+            f"(+{trial.oos_sharpe - baseline_sharpe:.3f}, {trial.oos_trades} OOS trades) "
+            f"— queued for validation",
+            flush=True,
+        )
+        return True
+
+    def trial_one(self, inst: InstrumentConfig) -> Optional[Trial]:
+        """Run one random trial for an instrument. Returns the Trial or None."""
+        trials = self.trial_batch(inst, n=1)
+        return trials[0] if trials else None
+
+    def trial_batch(self, inst: InstrumentConfig, n: int = 1, pool=None) -> list[Trial]:
+        """Run ``n`` independent random trials for an instrument. Parameter
+        sampling, deduplication, history I/O and the candidate gate all happen
+        here in the main process (so the append-only log has a single writer and
+        results are deterministic for a given seed); only the CPU-bound
+        backtests are dispatched to ``pool`` when one is supplied. Parallel and
+        serial runs therefore produce identical history."""
+        if not inst.param_bounds:
+            return []
+        try:
+            df = self._get_data(inst)
+        except Exception as exc:
+            print(f"[optimizer] {inst.key}: data fetch failed ({exc})", flush=True)
+            return []
+
+        # Selection runs on the search slice only; the holdout tail is reserved
+        # for held-out confirmation in validate_one and is never sampled on.
+        search_df, _ = split_search_holdout(df)
+        baseline_sharpe = self._ensure_baseline(inst, search_df)
+        risk = self.config.account.risk_per_trade
+
+        param_sets: list[dict] = []
+        attempts = 0
+        while len(param_sets) < n and attempts < max(n * 5, 5):
+            attempts += 1
+            params = sample_params(inst, self.rng)
+            if params in param_sets or self.history.already_tried(inst.key, params):
+                continue
+            param_sets.append(params)
+        if not param_sets:
+            return []
+
+        work = [(search_df, inst, params, risk) for params in param_sets]
+        if pool is not None and len(work) > 1:
+            results = list(pool.map(_wf_worker, work))
+        else:
+            results = [_wf_worker(w) for w in work]
+
+        trials: list[Trial] = []
+        for params, trial in zip(param_sets, results):
+            if trial is None:
+                continue
+            self.history.log(trial)
+            self._maybe_candidate(inst, trial, baseline_sharpe)
+            trials.append(trial)
+        return trials
 
     def validate_one(self) -> Optional[dict]:
         """Pick the oldest pending candidate and run the stage-two validation:
@@ -685,29 +728,52 @@ class ContinuousOptimizer:
         )
         return verdict
 
-    def run_forever(self, sleep: float = TRIAL_SLEEP) -> None:
+    def run_forever(
+        self,
+        sleep: Optional[float] = None,
+        workers: int = 1,
+        throttle: bool = True,
+    ) -> None:
+        """Round-robin the tunable instruments forever.
+
+        ``workers`` backtests run in parallel per pass (each trial is
+        independent and CPU-bound), so throughput scales ~linearly with cores.
+        ``throttle`` keeps the ``TRIAL_SLEEP`` pause that stops the optimizer
+        pinning a CPU when it shares the machine with the live bot; turn it off
+        for a dedicated optimisation run. ``sleep`` overrides the pause length.
+        """
         instruments = list(self.config.instruments.values())
         tunable = [i for i in instruments if i.param_bounds]
         if not tunable:
             print("[optimizer] No instruments have param_bounds — nothing to optimize.", flush=True)
             return
+        if sleep is None:
+            sleep = TRIAL_SLEEP if throttle else 0.0
+        workers = max(1, int(workers))
         print(
             f"[optimizer] Starting continuous optimization over "
-            f"{[i.key for i in tunable]}. Ctrl-C to stop.",
+            f"{[i.key for i in tunable]} with {workers} worker(s), "
+            f"sleep={sleep:g}s. Ctrl-C to stop.",
             flush=True,
         )
+        pool = ProcessPoolExecutor(max_workers=workers) if workers > 1 else None
         idx = 0
-        while True:
-            inst = tunable[idx % len(tunable)]
-            idx += 1
-            # Interleave: validate one pending candidate per pass so the
-            # pipeline drains while the search keeps exploring.
-            self.validate_one()
-            trial = self.trial_one(inst)
-            if trial:
-                print(
-                    f"[optimizer] {inst.key}: OOS Sharpe {trial.oos_sharpe:.3f} "
-                    f"({trial.oos_trades} trades) — {trial.params}",
-                    flush=True,
-                )
-            time.sleep(sleep)
+        try:
+            while True:
+                inst = tunable[idx % len(tunable)]
+                idx += 1
+                # Interleave: validate one pending candidate per pass so the
+                # pipeline drains while the search keeps exploring.
+                self.validate_one()
+                trials = self.trial_batch(inst, n=workers, pool=pool)
+                for trial in trials:
+                    print(
+                        f"[optimizer] {inst.key}: OOS Sharpe {trial.oos_sharpe:.3f} "
+                        f"({trial.oos_trades} trades) — {trial.params}",
+                        flush=True,
+                    )
+                if sleep:
+                    time.sleep(sleep)
+        finally:
+            if pool is not None:
+                pool.shutdown()

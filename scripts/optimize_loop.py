@@ -9,15 +9,22 @@ as candidates; each loop pass also validates one pending candidate
 (regime folds + perturbation test) and marks it qualified or rejected.
 Only qualified proposals reach the nightly reviewer.
 
-  python3 scripts/optimize_loop.py
-  python3 scripts/optimize_loop.py --sleep 3   # slower, less CPU
-  python3 scripts/optimize_loop.py --instrument BTC  # one instrument only
+  python3 scripts/optimize_loop.py                       # all cores, throttled
+  python3 scripts/optimize_loop.py --workers 4           # cap at 4 cores
+  python3 scripts/optimize_loop.py --no-throttle         # dedicated run, full tilt
+  python3 scripts/optimize_loop.py --instrument BTC      # one instrument only
+
+Each backtest is independent and CPU-bound, so trials run across worker
+processes (default: all cores) for ~Ncores x more trials/day. The 1.5s
+inter-pass throttle keeps a core free when sharing the box with the live bot;
+--no-throttle removes it for a dedicated optimisation run.
 
 Nothing here changes config.yaml or any live code. It only produces
 evidence that the reviewer reads and may act on.
 """
 
 import argparse
+import os
 import sys
 from pathlib import Path
 
@@ -35,7 +42,18 @@ def main() -> None:
     parser.add_argument("--config", default=ROOT / "config.yaml")
     parser.add_argument("--history", default=ROOT / "state/backtest_history.jsonl")
     parser.add_argument("--proposals", default=ROOT / "state/proposals.jsonl")
-    parser.add_argument("--sleep", type=float, default=TRIAL_SLEEP, help="seconds between trials")
+    parser.add_argument(
+        "--workers", type=int, default=os.cpu_count() or 1,
+        help="parallel backtest workers (default: all cores)",
+    )
+    parser.add_argument(
+        "--sleep", type=float, default=None,
+        help="seconds between passes (default: throttle setting)",
+    )
+    parser.add_argument(
+        "--no-throttle", action="store_true",
+        help="remove the inter-pass pause (use on a dedicated run)",
+    )
     parser.add_argument("--instrument", help="only optimize this instrument key")
     args = parser.parse_args()
 
@@ -51,7 +69,7 @@ def main() -> None:
     optimizer = ContinuousOptimizer(config, history, proposals)
 
     try:
-        optimizer.run_forever(sleep=args.sleep)
+        optimizer.run_forever(sleep=args.sleep, workers=args.workers, throttle=not args.no_throttle)
     except KeyboardInterrupt:
         print("\n[optimizer] stopped.")
 
