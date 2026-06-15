@@ -28,3 +28,7 @@ No blocked trades resolved this period.
 fatal: could not read Username for 'https://github.com': Device not configured
 === nightly review 2026-06-12 (21:30) ===
 REVIEW FAILED: gh is not authenticated — run: gh auth login
+=== nightly review 2026-06-13 (21:30) ===
+REVIEW FAILED: gh is not authenticated — run: gh auth login
+=== nightly review 2026-06-14 (21:30) ===
+REVIEW FAILED: gh is not authenticated — run: gh auth login

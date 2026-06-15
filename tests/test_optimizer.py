@@ -9,15 +9,37 @@ from fablebot.optimizer import (
     ContinuousOptimizer,
     MIN_IMPROVEMENT,
     MIN_TRADES,
+    MIN_TRIALS_FOR_DSR,
+    Trial,
     _round_param,
+    deflated_sharpe_ratio,
+    equity_returns,
+    expected_max_sharpe,
     perturb_params,
+    perturbation_passes,
+    probabilistic_sharpe_ratio,
     run_walk_forward,
     sample_params,
     sharpe_ratio,
+    split_search_holdout,
     validation_folds,
 )
 from fablebot.pipeline import CANDIDATE, ProposalStore
 from tests.conftest import make_ohlcv
+
+
+def _fake_trial(instrument="SPX", oos_sharpe=0.0, params=None, oos_curve=None, **over):
+    base = dict(
+        instrument=instrument, strategy="mean_reversion", timeframe="15m",
+        params=params if params is not None else dict(MR_INST.params),
+        is_sharpe=0.0, oos_sharpe=oos_sharpe, is_trades=30, oos_trades=30,
+        is_bars=300, oos_bars=100, is_return_pct=0.0, oos_return_pct=0.0,
+    )
+    base.update(over)
+    t = Trial(**base)
+    if oos_curve is not None:
+        t.oos_equity_curve = list(oos_curve)
+    return t
 
 MR_INST = InstrumentConfig(
     key="SPX",
@@ -235,3 +257,188 @@ def test_optimizer_candidates_enter_pipeline_and_get_validated(tmp_path):
     while opt.validate_one() is not None:
         pass
     assert proposals.by_status(CANDIDATE) == []
+
+
+# ── Workstream A: hardened validation gate ──────────────────────────────────
+
+# -- trade-count floor was raised off the noisy MIN_TRADES=8 ------------------
+
+def test_min_trades_floor_is_substantial():
+    assert MIN_TRADES >= 20
+
+
+# -- deflated / probabilistic Sharpe (multiple-comparisons correction) --------
+
+def test_psr_high_for_consistent_gains_low_for_noise():
+    rng = np.random.default_rng(1)
+    strong = rng.normal(0.01, 0.002, 300)  # steady gains, tiny vol -> high SR
+    assert probabilistic_sharpe_ratio(strong, 0.0) > 0.99
+    noise = rng.normal(0.0, 0.01, 300)  # zero-drift random returns
+    assert probabilistic_sharpe_ratio(noise, 0.0) < 0.95
+
+
+def test_psr_degenerate_streams_score_zero():
+    assert probabilistic_sharpe_ratio(np.array([0.01, 0.01]), 0.0) == 0.0  # too short
+    assert probabilistic_sharpe_ratio(np.full(50, 0.01), 0.0) == 0.0       # zero variance
+
+
+def test_expected_max_sharpe_grows_with_trials():
+    assert expected_max_sharpe(5000, 0.02) > expected_max_sharpe(20, 0.02)
+    assert expected_max_sharpe(1, 0.02) == 0.0   # undefined for a single draw
+    assert expected_max_sharpe(50, 0.0) == 0.0   # no dispersion -> no benchmark
+
+
+def test_deflation_penalises_more_comparisons():
+    """The same edge is less convincing when it was the best of many draws."""
+    rng = np.random.default_rng(0)
+    returns = rng.normal(0.0009, 0.01, 250)  # a modest real-looking edge
+    few = deflated_sharpe_ratio(returns, n_trials=3, sr_std=0.03)
+    many = deflated_sharpe_ratio(returns, n_trials=5000, sr_std=0.03)
+    assert few > many
+
+
+def test_deflated_sharpe_gate_rejects_noise_keeps_real_edge(tmp_path):
+    """The entry gate must reject a noisy OOS curve once enough configs have
+    been tried, while still passing a genuine edge."""
+    config = make_config_with(MR_INST)
+    history = BacktestHistory(tmp_path / "h.jsonl")
+    proposals = ProposalStore(tmp_path / "p.jsonl")
+    opt = ContinuousOptimizer(config, history, proposals, fetch_fn=lambda *a, **k: None, seed=0)
+
+    # Seed a broad search so the multiple-comparison correction is in force.
+    rng = np.random.default_rng(7)
+    for _ in range(MIN_TRIALS_FOR_DSR + 40):
+        history.log(_fake_trial(oos_sharpe=float(rng.normal(0.5, 1.5))))
+
+    noisy_curve = 100_000 * np.cumprod(1 + rng.normal(0.0, 0.01, 200))
+    assert opt._passes_deflated_sharpe(MR_INST, _fake_trial(oos_curve=noisy_curve)) is False
+
+    strong_curve = np.linspace(100_000, 130_000, 200)
+    assert opt._passes_deflated_sharpe(MR_INST, _fake_trial(oos_curve=list(strong_curve))) is True
+
+
+def test_deflated_sharpe_gate_skipped_until_enough_trials(tmp_path):
+    """Too few prior trials -> multiple-comparison risk is low and the variance
+    estimate is unreliable, so the gate abstains (returns True)."""
+    config = make_config_with(MR_INST)
+    history = BacktestHistory(tmp_path / "h.jsonl")
+    proposals = ProposalStore(tmp_path / "p.jsonl")
+    opt = ContinuousOptimizer(config, history, proposals, fetch_fn=lambda *a, **k: None, seed=0)
+    history.log(_fake_trial(oos_sharpe=0.5))  # only one prior trial
+    noisy_curve = 100_000 * np.cumprod(1 + np.random.default_rng(3).normal(0.0, 0.01, 200))
+    assert opt._passes_deflated_sharpe(MR_INST, _fake_trial(oos_curve=noisy_curve)) is True
+    # ...but a curve too short to assess is always rejected
+    assert opt._passes_deflated_sharpe(MR_INST, _fake_trial(oos_curve=[100_000, 100_100])) is False
+
+
+def test_equity_returns_scrubs_non_finite():
+    assert equity_returns([100.0, 110.0, 121.0]).tolist() == pytest.approx([0.1, 0.1])
+    assert equity_returns([100.0]).size == 0
+
+
+# -- held-out split: selection and confirmation on separate data --------------
+
+def test_split_search_holdout_disjoint_and_embargoed():
+    df = make_ohlcv(np.linspace(100, 200, 1000), freq="1h")
+    search, holdout = split_search_holdout(df, holdout_frac=0.15, embargo_frac=0.02)
+    assert holdout is not None
+    assert len(holdout) == 150
+    # the holdout tail starts strictly after the search slice, with an embargo gap
+    assert search.index[-1] < holdout.index[0]
+    gap = df.index.get_loc(holdout.index[0]) - df.index.get_loc(search.index[-1]) - 1
+    assert gap >= 1
+
+
+def test_split_search_holdout_none_when_too_small():
+    df = make_ohlcv(np.linspace(100, 110, 40), freq="1h")
+    search, holdout = split_search_holdout(df)
+    assert holdout is None
+    assert len(search) == len(df)
+
+
+# -- non-overlapping, purged folds --------------------------------------------
+
+def test_validation_folds_are_non_overlapping_and_purged():
+    df = make_ohlcv(np.linspace(100, 300, 1200), freq="4h")
+    folds = validation_folds(df, n_folds=4)
+    assert len(folds) >= 2
+    for earlier, later in zip(folds, folds[1:]):
+        # no shared bars, and a purge gap between adjacent folds
+        assert earlier.index[-1] < later.index[0]
+
+
+# -- perturbation bar now keys off the candidate's OWN Sharpe ------------------
+
+def test_perturbation_requires_stability_near_own_sharpe():
+    # within 20% of its own 1.0 (floor 0.8) and above baseline 0.5 -> passes
+    assert perturbation_passes(0.85, candidate_oos=1.0, baseline_oos=0.5)
+    # above the old "beat baseline" bar (0.6 > 0.5) but collapses below 0.8 floor
+    # -> the tightened bar correctly rejects it
+    assert not perturbation_passes(0.6, candidate_oos=1.0, baseline_oos=0.5)
+    # stable near its own value but no longer beats the baseline -> rejected
+    assert not perturbation_passes(0.95, candidate_oos=1.0, baseline_oos=0.97)
+
+
+# -- baseline bug fix: keyed to params, scanned across full history -----------
+
+def test_baseline_survives_more_than_100_later_trials(tmp_path):
+    """The 101-trial window bug: a baseline must stay findable no matter how
+    many non-baseline trials are logged after it."""
+    h = BacktestHistory(tmp_path / "h.jsonl")
+    h.log(_fake_trial(oos_sharpe=1.234, is_baseline=True))
+    for i in range(150):
+        h.log(_fake_trial(oos_sharpe=0.1, params={"lookback": i}))
+    found = h.baseline("SPX", params=dict(MR_INST.params))
+    assert found is not None
+    assert found["oos_sharpe"] == pytest.approx(1.234)
+
+
+def test_baseline_is_keyed_to_params(tmp_path):
+    h = BacktestHistory(tmp_path / "h.jsonl")
+    h.log(_fake_trial(oos_sharpe=1.0, is_baseline=True))
+    # a different config has no baseline yet -> forces a fresh measurement
+    assert h.baseline("SPX", params={**MR_INST.params, "lookback": 99}) is None
+    # the unkeyed lookup still returns the most recent baseline
+    assert h.baseline("SPX") is not None
+
+
+def test_ensure_baseline_does_not_rechurn(tmp_path):
+    """With a baseline already present for the current params, _ensure_baseline
+    reuses it and never appends a duplicate — even after 150 later trials. This
+    is the regression for the 101-trial re-baselining churn."""
+    df = make_ohlcv(np.linspace(100, 200, 500), freq="15min")
+    config = make_config_with(MR_INST)
+    h = BacktestHistory(tmp_path / "h.jsonl")
+    p = ProposalStore(tmp_path / "p.jsonl")
+    opt = ContinuousOptimizer(config, h, p, fetch_fn=lambda *a, **k: df, seed=0)
+    search_df, _ = split_search_holdout(df)
+
+    s1 = opt._ensure_baseline(MR_INST, search_df)
+    for i in range(150):
+        h.log(_fake_trial(oos_sharpe=0.0, params={"lookback": i}))
+    s2 = opt._ensure_baseline(MR_INST, search_df)
+
+    assert s1 == s2
+    n_baselines = sum(1 for t in h.read("SPX", limit=None) if t.get("is_baseline"))
+    assert n_baselines == 1
+
+
+def test_ensure_baseline_remeasures_when_params_change(tmp_path):
+    """A promotion that changes config.yaml must trigger a fresh baseline rather
+    than grading new candidates against the superseded config."""
+    df = make_ohlcv(np.linspace(100, 180, 500), freq="15min")
+    config = make_config_with(MR_INST)
+    h = BacktestHistory(tmp_path / "h.jsonl")
+    p = ProposalStore(tmp_path / "p.jsonl")
+    opt = ContinuousOptimizer(config, h, p, fetch_fn=lambda *a, **k: df, seed=0)
+    search_df, _ = split_search_holdout(df)
+    opt._ensure_baseline(MR_INST, search_df)
+
+    # simulate a promotion: live params change
+    changed = InstrumentConfig(**{**MR_INST.__dict__, "params": {**MR_INST.params, "entry_z": 2.5}})
+    opt.config.instruments["SPX"] = changed
+    opt._ensure_baseline(changed, search_df)
+
+    baselines = [t for t in h.read("SPX", limit=None) if t.get("is_baseline")]
+    assert len(baselines) == 2  # one per distinct config
+    assert {b["params"]["entry_z"] for b in baselines} == {2.0, 2.5}
