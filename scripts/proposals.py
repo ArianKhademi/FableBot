@@ -44,6 +44,25 @@ def _proposal_line(p: dict) -> list[str]:
     return lines
 
 
+def overfitting_gap(trials: list[dict]) -> float:
+    """Median in-sample minus out-of-sample Sharpe across an instrument's
+    non-baseline trials. A large positive gap = the search keeps finding configs
+    that look great in-sample and fall apart OOS, i.e. an overfitting-prone
+    surface — useful context for how much to trust its proposals."""
+    gaps = [
+        t["is_sharpe"] - t["oos_sharpe"]
+        for t in trials
+        if not t.get("is_baseline")
+        and isinstance(t.get("is_sharpe"), (int, float))
+        and isinstance(t.get("oos_sharpe"), (int, float))
+        and t["is_sharpe"] == t["is_sharpe"]  # not NaN
+        and t["oos_sharpe"] == t["oos_sharpe"]
+    ]
+    if not gaps:
+        return float("nan")
+    return float(sorted(gaps)[len(gaps) // 2])
+
+
 def best_per_instrument(items: list[dict]) -> dict[str, dict]:
     """The single strongest qualified proposal for each instrument, ranked by
     OOS Sharpe improvement then trade count."""
@@ -120,12 +139,14 @@ def render(store: ProposalStore, history_path: Path) -> str:
             worst = min(non_baseline, key=lambda t: t["oos_sharpe"])
             avg_oos = sum(t["oos_sharpe"] for t in non_baseline) / len(non_baseline)
             baseline_sharpe = f"{baseline['oos_sharpe']:.3f}" if baseline else "n/a"
+            gap = overfitting_gap(trials)
+            gap_str = f", IS-OOS gap: {gap:+.2f}" if gap == gap else ""
             lines.append(
                 f"- **{key}**: {len(trials)} trials total "
                 f"(baseline OOS Sharpe: {baseline_sharpe}, "
                 f"best found: {best['oos_sharpe']:.3f}, "
                 f"avg: {avg_oos:.3f}, "
-                f"worst: {worst['oos_sharpe']:.3f})"
+                f"worst: {worst['oos_sharpe']:.3f}{gap_str})"
             )
         else:
             lines.append(f"- **{key}**: {n} trials (baseline only so far)")

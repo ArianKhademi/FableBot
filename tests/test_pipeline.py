@@ -172,7 +172,7 @@ def _heldout_scenario():
     return candidate, current, search, favorable, adverse
 
 
-def test_shipping_slate_picks_one_best_per_instrument():
+def _proposals_cli():
     import importlib.util
     from pathlib import Path
 
@@ -180,6 +180,23 @@ def test_shipping_slate_picks_one_best_per_instrument():
     spec = importlib.util.spec_from_file_location("proposals_cli", root / "scripts" / "proposals.py")
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
+    return mod
+
+
+def test_overfitting_gap_flags_is_oos_divergence():
+    mod = _proposals_cli()
+    trials = [
+        {"is_sharpe": 3.0, "oos_sharpe": 0.5},
+        {"is_sharpe": 2.0, "oos_sharpe": 0.0},
+        {"is_sharpe": 4.0, "oos_sharpe": 1.0},
+        {"is_baseline": True, "is_sharpe": 1.0, "oos_sharpe": 1.0},  # baseline ignored
+    ]
+    assert mod.overfitting_gap(trials) == 2.5  # median of {2.5, 2.0, 3.0}
+    assert mod.overfitting_gap([]) != mod.overfitting_gap([])  # NaN when empty
+
+
+def test_shipping_slate_picks_one_best_per_instrument():
+    mod = _proposals_cli()
 
     qualified = [
         {"proposal_id": "a", "instrument": "BTC", "improvement": 0.2, "oos_trades": 40},
