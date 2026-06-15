@@ -1,5 +1,13 @@
 # Phase 2 — From parameter tuning to a self-improving strategy engine
 
+> **Status: implemented.** Workstreams A–I below are all shipped behind tests
+> (`tests/test_{optimizer,pipeline,dsl,search,ml,rl,data_universe,backtest}.py`),
+> with `RISK_RULES.md` / `tests/test_invariants.py` green throughout, plus
+> transaction-cost realism, an IS/OOS overfitting diagnostic and a unified
+> orchestrator (`scripts/run_engine.py`). Remaining back-burner items: a paid
+> data feed and options/futures (Workstream H-paid / G-options). This document
+> is kept as the original brief and rationale.
+
 This is a build brief for a fresh Claude Code session running **locally**, where
 the `state/` files (the real `backtest_history.jsonl`, `proposals.jsonl`,
 `journal.jsonl`) are present. Read it top to bottom, then read the actual state
