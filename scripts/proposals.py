@@ -44,6 +44,18 @@ def _proposal_line(p: dict) -> list[str]:
     return lines
 
 
+def best_per_instrument(items: list[dict]) -> dict[str, dict]:
+    """The single strongest qualified proposal for each instrument, ranked by
+    OOS Sharpe improvement then trade count."""
+    best: dict[str, dict] = {}
+    for p in items:
+        inst = p["instrument"]
+        key = (p.get("improvement", 0.0), p.get("oos_trades", 0))
+        if inst not in best or key > (best[inst].get("improvement", 0.0), best[inst].get("oos_trades", 0)):
+            best[inst] = p
+    return best
+
+
 def render(store: ProposalStore, history_path: Path) -> str:
     lines = ["# Proposal pipeline", ""]
     lines.append("Stages: candidate (one walk-forward win) -> validation "
@@ -72,6 +84,25 @@ def render(store: ProposalStore, history_path: Path) -> str:
         else:
             lines.append("none")
         lines.append("")
+
+    # ── recommended shipping slate: at most one change per instrument ─────────
+    slate = best_per_instrument(store.by_status(QUALIFIED))
+    lines.append("## Recommended shipping slate (at most one per instrument)")
+    lines.append(
+        "The books are independent, so up to one change *per instrument* per night "
+        "stays cleanly attributable. Ship at most these — never more than one per "
+        "instrument, and only those that also pass the strategic/journal checks:"
+    )
+    if slate:
+        for inst in sorted(slate):
+            p = slate[inst]
+            lines.append(
+                f"- **{inst}**: `{p['proposal_id']}` (+{p.get('improvement', 0.0):.3f} OOS Sharpe, "
+                f"{p.get('oos_trades', '?')} OOS trades)"
+            )
+    else:
+        lines.append("- none qualified — review, no change warranted")
+    lines.append("")
 
     # ── backtest history summary ─────────────────────────────────────────────
     history = _load_jsonl(history_path)

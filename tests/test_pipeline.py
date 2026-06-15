@@ -172,6 +172,27 @@ def _heldout_scenario():
     return candidate, current, search, favorable, adverse
 
 
+def test_shipping_slate_picks_one_best_per_instrument():
+    import importlib.util
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location("proposals_cli", root / "scripts" / "proposals.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+
+    qualified = [
+        {"proposal_id": "a", "instrument": "BTC", "improvement": 0.2, "oos_trades": 40},
+        {"proposal_id": "b", "instrument": "BTC", "improvement": 0.5, "oos_trades": 60},  # best BTC
+        {"proposal_id": "c", "instrument": "GOLD", "improvement": 0.3, "oos_trades": 30},
+        {"proposal_id": "d", "instrument": "BTC", "improvement": 0.5, "oos_trades": 55},  # ties improv, fewer trades
+    ]
+    slate = mod.best_per_instrument(qualified)
+    assert set(slate) == {"BTC", "GOLD"}            # one per instrument
+    assert slate["BTC"]["proposal_id"] == "b"        # highest improvement, then trades
+    assert slate["GOLD"]["proposal_id"] == "c"
+
+
 def test_in_sample_pass_qualifies_without_a_holdout():
     candidate, current, search, _, _ = _heldout_scenario()
     v = validate_candidate(search, TF_INST, candidate, current, np.random.default_rng(0))
