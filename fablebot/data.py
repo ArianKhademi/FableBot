@@ -162,10 +162,11 @@ class CachedSource:
     def fetch(self, symbol: str, timeframe: str, days: Optional[int] = None) -> pd.DataFrame:
         path = self._path(symbol, timeframe)
         if path.exists() and (time.time() - path.stat().st_mtime) < self.ttl_seconds:
-            df = pd.read_csv(path, index_col=0, parse_dates=True)
-            if days is not None:
-                df = df.iloc[-days:]
-            return df
+            # Return the cached series as fetched. ``days`` bounds the *fetch*
+            # window (calendar days), not a row count — slicing by rows here
+            # would silently truncate intraday history (e.g. 700 4h bars instead
+            # of ~700 days). The fetch already applied the window.
+            return pd.read_csv(path, index_col=0, parse_dates=True)
         df = self.source.fetch(symbol, timeframe, days)
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         df.to_csv(path)

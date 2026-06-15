@@ -77,6 +77,26 @@ def test_cached_source_avoids_refetch(tmp_path):
     assert (tmp_path / "XYZ__1d.csv").exists()
 
 
+def test_cached_source_hit_returns_full_window_not_row_sliced(tmp_path):
+    # intraday: `days` is a fetch *window* (calendar days), never a row count.
+    # A real source returns the full windowed series; a cache hit must return
+    # all of it, not its last `days` rows.
+    df = make_ohlcv(np.linspace(100, 120, 4000), freq="1h")
+
+    class FullSource:  # models YFinanceSource: windows by calendar, not rows
+        def __init__(self): self.calls = 0
+        def fetch(self, symbol, timeframe, days=None):
+            self.calls += 1
+            return df
+
+    src = FullSource()
+    cached = data.CachedSource(src, tmp_path, ttl_minutes=60)
+    cached.fetch("BTCUSDT", "1h", days=700)        # miss: caches full 4000 bars
+    hit = cached.fetch("BTCUSDT", "1h", days=700)  # hit: must not truncate to 700 rows
+    assert len(hit) == 4000
+    assert src.calls == 1
+
+
 def test_cached_source_refetches_when_stale(tmp_path):
     df = make_ohlcv(np.linspace(100, 120, 50), freq="D")
     stub = _StubSource(df)
