@@ -81,10 +81,11 @@ _NORM = NormalDist()
 DATA_CACHE_TTL = 1800
 
 # Annualisation: approximate bars per calendar year for each timeframe.
-BARS_PER_YEAR = {"15m": 252 * 26, "1h": 252 * 6.5, "4h": 252 * 1.625}
+BARS_PER_YEAR = {"15m": 252 * 26, "1h": 252 * 6.5, "4h": 252 * 1.625, "1d": 252}
 
 # How many days of history to fetch for optimisation (longer than live trading).
-OPTIMIZER_FETCH_DAYS = {"15m": 59, "1h": 700, "4h": 700}
+# Daily reaches back years for deep, multi-regime rankings (Workstream H).
+OPTIMIZER_FETCH_DAYS = {"15m": 59, "1h": 700, "4h": 700, "1d": 3650}
 
 # How many seconds to sleep between trials so the optimizer doesn't pin a CPU.
 TRIAL_SLEEP = 1.5

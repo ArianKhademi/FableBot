@@ -64,9 +64,19 @@ def main() -> None:
         # Restrict to the single instrument by hiding the others
         config.instruments = {args.instrument: config.instruments[args.instrument]}
 
+    # Fetch through the configured (optionally cached) data source.
+    from fablebot.data import get_source
+    cache_dir = config.data.cache_dir
+    if cache_dir and not Path(cache_dir).is_absolute():
+        cache_dir = ROOT / cache_dir
+    source = get_source(config.data.source, cache_dir=cache_dir, ttl_minutes=config.data.cache_ttl_minutes)
+
     history = BacktestHistory(args.history)
     proposals = ProposalStore(args.proposals)
-    optimizer = ContinuousOptimizer(config, history, proposals)
+    optimizer = ContinuousOptimizer(
+        config, history, proposals,
+        fetch_fn=lambda symbol, timeframe, days: source.fetch(symbol, timeframe, days),
+    )
 
     try:
         optimizer.run_forever(sleep=args.sleep, workers=args.workers, throttle=not args.no_throttle)

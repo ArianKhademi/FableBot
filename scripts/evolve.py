@@ -104,6 +104,10 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="FableBot evolutionary genome search")
     parser.add_argument("--config", default=ROOT / "config.yaml")
     parser.add_argument("--instrument", help="only evolve this instrument key")
+    parser.add_argument("--universe", action="store_true",
+                        help="evolve over the config 'universe' scan list, not the traded instruments")
+    parser.add_argument("--screen-top", type=int, default=None,
+                        help="with --universe, screen to the N most liquid symbols first")
     parser.add_argument("--generations", type=int, default=10)
     parser.add_argument("--population", type=int, default=24)
     parser.add_argument("--top", type=int, default=5, help="leaderboard size")
@@ -113,21 +117,34 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config)
-    targets = (
-        [config.instruments[args.instrument]] if args.instrument
-        else list(config.instruments.values())
-    )
     proposals_path = Path(args.genome_proposals)
 
-    from fablebot.data import fetch_ohlcv
+    from fablebot.config import universe_instruments
+    from fablebot.data import get_source
     from fablebot.optimizer import OPTIMIZER_FETCH_DAYS
+    from fablebot.universe import screen_universe
+
+    cache_dir = config.data.cache_dir
+    if cache_dir and not Path(cache_dir).is_absolute():
+        cache_dir = ROOT / cache_dir
+    source = get_source(config.data.source, cache_dir=cache_dir, ttl_minutes=config.data.cache_ttl_minutes)
+
+    if args.universe:
+        targets = universe_instruments(config)
+        if args.screen_top:
+            targets = screen_universe(targets, source, top_n=args.screen_top)
+            print(f"[evolve] screened universe to {len(targets)} symbols by liquidity")
+    elif args.instrument:
+        targets = [config.instruments[args.instrument]]
+    else:
+        targets = list(config.instruments.values())
 
     pool = ProcessPoolExecutor(max_workers=args.workers) if args.workers > 1 else None
     try:
         for inst in targets:
             try:
                 days = OPTIMIZER_FETCH_DAYS.get(inst.timeframe, 60)
-                df = fetch_ohlcv(inst.symbol, inst.timeframe, days=days)
+                df = source.fetch(inst.symbol, inst.timeframe, days=days)
             except Exception as exc:
                 print(f"[evolve] {inst.key}: data fetch failed ({exc}) — skipping", flush=True)
                 continue
