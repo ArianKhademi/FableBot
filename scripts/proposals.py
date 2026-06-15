@@ -44,6 +44,37 @@ def _proposal_line(p: dict) -> list[str]:
     return lines
 
 
+def overfitting_gap(trials: list[dict]) -> float:
+    """Median in-sample minus out-of-sample Sharpe across an instrument's
+    non-baseline trials. A large positive gap = the search keeps finding configs
+    that look great in-sample and fall apart OOS, i.e. an overfitting-prone
+    surface — useful context for how much to trust its proposals."""
+    gaps = [
+        t["is_sharpe"] - t["oos_sharpe"]
+        for t in trials
+        if not t.get("is_baseline")
+        and isinstance(t.get("is_sharpe"), (int, float))
+        and isinstance(t.get("oos_sharpe"), (int, float))
+        and t["is_sharpe"] == t["is_sharpe"]  # not NaN
+        and t["oos_sharpe"] == t["oos_sharpe"]
+    ]
+    if not gaps:
+        return float("nan")
+    return float(sorted(gaps)[len(gaps) // 2])
+
+
+def best_per_instrument(items: list[dict]) -> dict[str, dict]:
+    """The single strongest qualified proposal for each instrument, ranked by
+    OOS Sharpe improvement then trade count."""
+    best: dict[str, dict] = {}
+    for p in items:
+        inst = p["instrument"]
+        key = (p.get("improvement", 0.0), p.get("oos_trades", 0))
+        if inst not in best or key > (best[inst].get("improvement", 0.0), best[inst].get("oos_trades", 0)):
+            best[inst] = p
+    return best
+
+
 def render(store: ProposalStore, history_path: Path) -> str:
     lines = ["# Proposal pipeline", ""]
     lines.append("Stages: candidate (one walk-forward win) -> validation "
@@ -73,6 +104,25 @@ def render(store: ProposalStore, history_path: Path) -> str:
             lines.append("none")
         lines.append("")
 
+    # ── recommended shipping slate: at most one change per instrument ─────────
+    slate = best_per_instrument(store.by_status(QUALIFIED))
+    lines.append("## Recommended shipping slate (at most one per instrument)")
+    lines.append(
+        "The books are independent, so up to one change *per instrument* per night "
+        "stays cleanly attributable. Ship at most these — never more than one per "
+        "instrument, and only those that also pass the strategic/journal checks:"
+    )
+    if slate:
+        for inst in sorted(slate):
+            p = slate[inst]
+            lines.append(
+                f"- **{inst}**: `{p['proposal_id']}` (+{p.get('improvement', 0.0):.3f} OOS Sharpe, "
+                f"{p.get('oos_trades', '?')} OOS trades)"
+            )
+    else:
+        lines.append("- none qualified — review, no change warranted")
+    lines.append("")
+
     # ── backtest history summary ─────────────────────────────────────────────
     history = _load_jsonl(history_path)
     lines.append("## Backtest history by instrument")
@@ -89,12 +139,14 @@ def render(store: ProposalStore, history_path: Path) -> str:
             worst = min(non_baseline, key=lambda t: t["oos_sharpe"])
             avg_oos = sum(t["oos_sharpe"] for t in non_baseline) / len(non_baseline)
             baseline_sharpe = f"{baseline['oos_sharpe']:.3f}" if baseline else "n/a"
+            gap = overfitting_gap(trials)
+            gap_str = f", IS-OOS gap: {gap:+.2f}" if gap == gap else ""
             lines.append(
                 f"- **{key}**: {len(trials)} trials total "
                 f"(baseline OOS Sharpe: {baseline_sharpe}, "
                 f"best found: {best['oos_sharpe']:.3f}, "
                 f"avg: {avg_oos:.3f}, "
-                f"worst: {worst['oos_sharpe']:.3f})"
+                f"worst: {worst['oos_sharpe']:.3f}{gap_str})"
             )
         else:
             lines.append(f"- **{key}**: {n} trials (baseline only so far)")

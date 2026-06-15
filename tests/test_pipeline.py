@@ -172,6 +172,44 @@ def _heldout_scenario():
     return candidate, current, search, favorable, adverse
 
 
+def _proposals_cli():
+    import importlib.util
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parent.parent
+    spec = importlib.util.spec_from_file_location("proposals_cli", root / "scripts" / "proposals.py")
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_overfitting_gap_flags_is_oos_divergence():
+    mod = _proposals_cli()
+    trials = [
+        {"is_sharpe": 3.0, "oos_sharpe": 0.5},
+        {"is_sharpe": 2.0, "oos_sharpe": 0.0},
+        {"is_sharpe": 4.0, "oos_sharpe": 1.0},
+        {"is_baseline": True, "is_sharpe": 1.0, "oos_sharpe": 1.0},  # baseline ignored
+    ]
+    assert mod.overfitting_gap(trials) == 2.5  # median of {2.5, 2.0, 3.0}
+    assert mod.overfitting_gap([]) != mod.overfitting_gap([])  # NaN when empty
+
+
+def test_shipping_slate_picks_one_best_per_instrument():
+    mod = _proposals_cli()
+
+    qualified = [
+        {"proposal_id": "a", "instrument": "BTC", "improvement": 0.2, "oos_trades": 40},
+        {"proposal_id": "b", "instrument": "BTC", "improvement": 0.5, "oos_trades": 60},  # best BTC
+        {"proposal_id": "c", "instrument": "GOLD", "improvement": 0.3, "oos_trades": 30},
+        {"proposal_id": "d", "instrument": "BTC", "improvement": 0.5, "oos_trades": 55},  # ties improv, fewer trades
+    ]
+    slate = mod.best_per_instrument(qualified)
+    assert set(slate) == {"BTC", "GOLD"}            # one per instrument
+    assert slate["BTC"]["proposal_id"] == "b"        # highest improvement, then trades
+    assert slate["GOLD"]["proposal_id"] == "c"
+
+
 def test_in_sample_pass_qualifies_without_a_holdout():
     candidate, current, search, _, _ = _heldout_scenario()
     v = validate_candidate(search, TF_INST, candidate, current, np.random.default_rng(0))

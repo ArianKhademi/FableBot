@@ -6,11 +6,18 @@ market actually moves — sizes every position off volatility, enforces a hard 1
 stop on every trade, and refuses to stack correlated risk-on exposure.
 
 But it doesn't just trade. FableBot **logs every decision, measures itself, and
-improves itself**: a continuous optimizer backtests new parameter sets around
-the clock, a staged proposal pipeline filters luck from signal, and a nightly
-Claude Code review turns the surviving evidence into draft pull requests you
-approve or reject. It can change its strategies; it can never change its risk
-rules.
+improves itself**: a continuous optimizer backtests new ideas around the clock,
+a staged proposal pipeline filters luck from signal with a statistically
+rigorous gate, and a nightly Claude Code review turns the surviving evidence
+into draft pull requests you approve or reject. It can change its strategies; it
+can never change its risk rules.
+
+It no longer only *tunes* three fixed strategies. A composable strategy DSL
+turns "three strategies" into a **search space of strategies**; an evolutionary
+search breeds and refines them; gradient-boosted-tree and reinforcement-learning
+models add learned signals — and **every one of them has to clear the same
+out-of-sample gate** (deflated Sharpe, purged regime folds, an embargoed
+held-out set) before it can be proposed. See [the strategy engine](#the-strategy-engine-phase-2).
 
 It also sends two messages a day:
 
@@ -133,21 +140,30 @@ One good out-of-sample number can be luck, so proposals are **staged**, and
 every transition is an append-only event in `state/proposals.jsonl`:
 
 ```
-trial ──(beats baseline OOS Sharpe by ≥0.15 with ≥8 trades)──► candidate
-candidate ──(regime folds + perturbation test)──► qualified ──► promoted
-                                              └──► rejected
+trial ──(beats baseline OOS Sharpe by ≥0.15, ≥20 trades, passes deflated Sharpe)──► candidate
+candidate ──(purged regime folds + perturbation + embargoed held-out)──► qualified ──► promoted
+                                                                    └──► rejected
 ```
 
-- **candidate** — one walk-forward win. Weak evidence; the reviewer may not act
-  on these.
-- **validation** (automatic, interleaved with the search) — two harder tests:
-  *regime robustness* (re-run head-to-head against the current params across
-  rolling time folds; must win ≥75%) and *perturbation* (jitter the params ±10%
-  and re-test; a knife-edge curve fit collapses, a real edge survives).
-- **qualified** — survived both. The only status the nightly reviewer may act
-  on, and even then only with strategic plausibility and a passing
+- **candidate** — one walk-forward win that also clears the **deflated Sharpe
+  ratio** (its OOS edge must beat the *expected maximum* Sharpe of N null trials,
+  so the bar rises automatically with how many configs were tried — the
+  multiple-comparisons correction). Still weak evidence on its own.
+- **validation** (automatic, interleaved with the search) — three harder tests:
+  *regime robustness* across **non-overlapping, embargo-purged** folds (must win
+  ≥75% head-to-head vs the current config); *perturbation* (jitter ±10% — the
+  median must stay within tolerance of the candidate's **own** Sharpe, not merely
+  beat the baseline it already cleared); and an **embargoed held-out slice the
+  search never touched** (the candidate must beat the current config there too —
+  the test selection bias cannot game).
+- **qualified** — survived all of it. The only status the nightly reviewer may
+  act on, and even then only with strategic plausibility and a passing
   `scripts/validate.py`.
 - **promoted / rejected** — the reviewer's recorded verdict, kept forever.
+
+The baseline each candidate is graded against is keyed to the params it
+measured and re-measured whenever the live config changes — so a promotion never
+leaves new candidates graded against a stale config.
 
 `python3 scripts/proposals.py` renders the live pipeline view and ends with a
 **funnel** that reconciles the whole search — trials run → how many became
@@ -160,13 +176,55 @@ gate is too loose — exactly the thing the roadmap's first workstream tightens.
 `scripts/nightly_review.sh` (cron it after the evening recap) runs Claude Code
 headless against [`prompts/reviewer.md`](prompts/reviewer.md). The reviewer
 reads the digest, the proposal pipeline, the backtest history, and the journal
-under a constitution — burden of proof, minimum sample sizes, **one validated
-change per review, never bundled**, and "no change" as a successful default.
-When a large queue of qualified proposals piles up it clusters and ranks them by
-instrument before shipping the single best one. Any edit must pass
-`scripts/validate.py` (the full test suite *plus* a backtest of every
-instrument); only then does it open a **draft PR** whose body is the evidence.
-The running bot is untouched until you merge.
+under a constitution — burden of proof, minimum sample sizes, **at most one
+validated change per instrument per review** (the books are independent, so up
+to ~5/night stays cleanly attributable; never two on the same book, never
+bundled), and "no change" as a successful default. The pipeline view hands it a
+ready-made *shipping slate* — each instrument's single strongest qualified
+proposal. Any edit must pass `scripts/validate.py` (the full test suite *plus* a
+backtest of every instrument); only then does it open a **draft PR** whose body
+is the evidence. The running bot is untouched until you merge.
+
+## The strategy engine (Phase 2)
+
+The loop above no longer only nudges numbers inside three fixed strategies — it
+searches a space of strategies, and can learn entirely new signals. Every layer
+emits the same `Signal`s through the **unchanged risk engine** (sizing, the hard
+stop, gap protection, trailing) and must clear the same hardened gate before it
+can be proposed. Full brief: [`docs/phase-2-learning-engine.md`](docs/phase-2-learning-engine.md).
+
+- **Composable strategy DSL** (`fablebot/dsl.py`) — a serialisable *genome*
+  (indicator palette + rule trees + risk block) that `build_strategy`
+  instantiates. The palette spans RSI, MACD, ADX/DI, Bollinger/Keltner, z-score,
+  Donchian, EMA/SMA, ATR and volume features; rules compose them with
+  threshold/cross/AND/OR logic. The three hand-written strategies are just seed
+  genomes (and reproduce bit-for-bit). Any genome can trade any symbol.
+- **Guided / evolutionary search** (`fablebot/search.py`, `scripts/evolve.py`) —
+  a genetic search over genomes (selection + crossover + mutation, seeded from
+  the seeds and any survivors on disk, **persisted so restarts resume learning**)
+  plus a dependency-free TPE Bayesian optimiser for refining an elite genome's
+  numbers.
+- **ML signal models** (`fablebot/ml.py`, `scripts/train_ml.py`) — a numpy
+  gradient-boosted-tree ensemble trained on engineered, leakage-free features to
+  predict forward returns; thresholded into entries. Fit on train only, judged
+  out-of-sample.
+- **RL agent** (`fablebot/rl.py`) — a constrained tabular Q-learning policy that
+  proposes **direction/timing only**; the risk engine still owns sizing and
+  stops. The most overfit-prone layer, gated the hardest.
+- **Parallelism** (`scripts/optimize_loop.py --workers N`) — trials run across
+  CPU cores; results are deterministic vs the serial path. `--no-throttle` for a
+  dedicated run.
+- **Config-driven universe** (`config.yaml: universe`, `scripts/evolve.py
+  --universe`) — scan many equities/ETFs/crypto; a liquidity screener ranks them.
+  Combined with the DSL, the search discovers *which symbols are worth trading*.
+- **Pluggable data** (`fablebot/data.py`) — an `OHLCVSource` interface
+  (yfinance / Stooq deep-daily / Binance deep-intraday) behind an on-disk cache;
+  swapping feeds is a config change.
+- **Transaction costs** (`config.yaml: costs.friction_bps`) — commission +
+  slippage applied to every fill during the search, so the gate can't certify a
+  frictionless-only edge.
+- **Unified engine** (`scripts/run_engine.py`) — one orchestrator that advances
+  the numeric optimizer and the evolutionary genome search together.
 
 ## Running the full system
 
@@ -177,7 +235,9 @@ Three processes, typically two tmux panes plus a cron entry:
 python3 scripts/run_bot.py
 
 # Pane 2 — the continuous optimizer (runs forever alongside the bot)
-python3 scripts/optimize_loop.py
+python3 scripts/optimize_loop.py                 # all cores, throttled
+#   or the unified engine: numeric optimizer + evolutionary genome search
+python3 scripts/run_engine.py --cycles 0 --workers 8
 
 # Cron — the nightly review, after the 21:00 recap
 30 21 * * * /path/to/FableBot/scripts/nightly_review.sh >> /path/to/FableBot/logs/review.log 2>&1
@@ -209,9 +269,16 @@ python3 scripts/run_bot.py --report evening     # 9pm-style recap now
 python3 scripts/analyze.py --days 30
 
 # Continuous optimizer + proposal pipeline
-python3 scripts/optimize_loop.py                # run forever
+python3 scripts/optimize_loop.py                # all cores, throttled
+python3 scripts/optimize_loop.py --workers 4 --no-throttle
 python3 scripts/optimize_loop.py --instrument BTC
-python3 scripts/proposals.py                    # pipeline + funnel view
+python3 scripts/proposals.py                    # pipeline + funnel + shipping slate
+
+# Strategy engine (Phase 2)
+python3 scripts/run_engine.py --cycles 1        # optimizer + genome search, one cycle
+python3 scripts/evolve.py --generations 10      # evolutionary genome search
+python3 scripts/evolve.py --universe --screen-top 10  # scan the wider universe
+python3 scripts/train_ml.py --instrument BTC    # train + gate an ML signal model
 
 # Validation gate (what every proposed change must pass)
 python3 scripts/validate.py
@@ -224,6 +291,12 @@ parameters, the risk budget, correlation groups, report times, and timezone.
 Each instrument also defines `param_bounds` — the search space the optimizer is
 allowed to explore. The optimizer only ever moves numbers *within* those
 bounds; it cannot touch the risk settings.
+
+Phase 2 adds three optional sections: `data` (which `OHLCVSource` and cache to
+fetch through), `universe` (a large, config-driven scan list for the genome
+search — add tickers without code changes), and `costs` (`friction_bps`, the
+commission + slippage applied during the search). An instrument may also carry a
+`genome` to run a composable-DSL strategy instead of a named one.
 
 ## Project layout
 
@@ -240,9 +313,14 @@ fablebot/
 ├── news.py           # Yahoo Finance headlines + high-impact flagging
 ├── reports.py        # 7am briefing / 9pm recap builders
 ├── notify.py         # console / file / webhook delivery
-├── backtest.py       # bar-by-bar simulator
-├── optimizer.py      # continuous walk-forward search + validation
+├── backtest.py       # bar-by-bar simulator (+ optional transaction costs)
+├── optimizer.py      # parallel walk-forward search + hardened validation gate
 ├── pipeline.py       # staged proposal store (append-only, audited)
+├── dsl.py            # composable strategy DSL: genomes + operators
+├── search.py         # genetic search + TPE + genome-aware gate
+├── ml.py             # gradient-boosted-tree signal models
+├── rl.py             # constrained Q-learning agent
+├── universe.py       # universe screening (liquidity)
 └── strategies/
     ├── base.py
     ├── mean_reversion.py
@@ -253,27 +331,37 @@ scripts/
 ├── run_bot.py          # live loop / on-demand reports
 ├── backtest.py         # single-instrument backtest
 ├── analyze.py          # journal → performance digest
-├── optimize_loop.py    # continuous optimizer (run forever)
-├── proposals.py        # pipeline + funnel view, status transitions
+├── optimize_loop.py    # continuous numeric optimizer (--workers, --no-throttle)
+├── evolve.py           # evolutionary genome search (--universe)
+├── train_ml.py         # train + gate ML signal models
+├── run_engine.py       # unified orchestrator (optimizer + genome search)
+├── proposals.py        # pipeline + funnel + shipping slate, status transitions
 ├── validate.py         # tests + per-instrument backtests (the PR gate)
 └── nightly_review.sh   # headless Claude Code review → draft PR
 
 prompts/reviewer.md     # the reviewer's constitution
 RISK_RULES.md           # the immutable risk constitution
 docs/learning-loop.md   # full design of the self-improvement loop
-docs/phase-2-learning-engine.md  # the roadmap (see below)
+docs/phase-2-learning-engine.md  # the strategy-engine brief
 ```
 
 ## Roadmap
 
-The system today tunes parameters inside three fixed strategies. The next phase
-turns it into a self-improving strategy *engine* — harden the validation gate,
-move from parameter tuning to a composable strategy DSL, add guided /
-evolutionary search that learns from history, then ML and RL signal models, with
-multi-core parallelism, an expandable trading universe, and deeper data. The
-full staged plan, with the statistical rationale and the guardrails that must
-hold throughout, is in
+**Phase 2 — the strategy engine — is implemented.** The validation gate is
+hardened (deflated Sharpe, purged folds, embargoed held-out, raised trade
+floor, baseline-refresh fix); parameter tuning has become a composable strategy
+DSL with a guided/evolutionary search that learns from history; ML and RL signal
+models are in, all behind the same gate; trials run multi-core; the universe is
+config-driven with a screener; data sits behind a swappable cached source; and
+transaction costs are modelled in the search. The staged brief, statistical
+rationale and guardrails are in
 [`docs/phase-2-learning-engine.md`](docs/phase-2-learning-engine.md).
+
+Still on the back burner (by design — they need the engine above to justify the
+cost): a **paid market-data feed** (Polygon/Tiingo/Databento) for deep intraday
+*equity* history, and **options/futures**, which need contract/expiry/Greeks
+modelling and a rethink of ATR sizing — their own project, after equities /
+ETFs / crypto / continuous futures.
 
 ## Disclaimer
 

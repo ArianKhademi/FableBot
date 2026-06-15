@@ -17,6 +17,39 @@ correlation:
     risk_on: [SPX, NDX, BTC]
   max_same_direction_per_group: 2
 
+data:
+  # Which OHLCVSource the optimizer/evolver fetch from, and the on-disk cache.
+  # yfinance | stooq (deep daily) | binance (deep intraday crypto).
+  source: yfinance
+  cache_dir: state/data_cache
+  cache_ttl_minutes: 1440
+
+universe:
+  # A large, config-driven scan list for the genome search (scripts/evolve.py
+  # --universe). Any genome can be tried on any symbol, so the search discovers
+  # which symbols are worth trading — separate from the few traded below.
+  # Add tickers freely; no code change required.
+  default_timeframe: "1d"
+  default_strategy: trend_following
+  symbols:
+    - {symbol: SPY,  name: "S&P 500 ETF"}
+    - {symbol: QQQ,  name: "Nasdaq 100 ETF"}
+    - {symbol: IWM,  name: "Russell 2000 ETF"}
+    - {symbol: DIA,  name: "Dow Jones ETF"}
+    - {symbol: GLD,  name: "Gold ETF"}
+    - {symbol: SLV,  name: "Silver ETF"}
+    - {symbol: USO,  name: "US Oil Fund"}
+    - {symbol: TLT,  name: "20Y Treasury ETF"}
+    - {symbol: XLE,  name: "Energy Sector"}
+    - {symbol: XLF,  name: "Financials Sector"}
+    - {symbol: XLK,  name: "Technology Sector"}
+    - {symbol: AAPL, name: "Apple"}
+    - {symbol: MSFT, name: "Microsoft"}
+    - {symbol: NVDA, name: "NVIDIA"}
+    - {symbol: AMZN, name: "Amazon"}
+    - {symbol: BTC-USD, name: "Bitcoin"}
+    - {symbol: ETH-USD, name: "Ethereum"}
+
 instruments:
   SPX:
     symbol: "^GSPC"

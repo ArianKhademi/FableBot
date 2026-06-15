@@ -75,15 +75,19 @@ one to ship — include it in the PR body whether or not you ship anything:
    the others, it likely means the current config for that instrument is
    significantly mis-tuned for the current regime — note this explicitly.
 
-4. **Still ship only one.** After the analysis, pick the single proposal with
-   the best combination of: highest OOS Sharpe improvement, most OOS trades,
-   tightest parameter cluster (if applicable), and clearest strategic
-   rationale. Ship that one. The rest stay in the queue — they will be
-   reviewed in future nights, accumulating more evidence as the optimizer
-   continues running.
+4. **Ship at most one per instrument.** The five books are independent, so up
+   to one change *per instrument* per night is still cleanly attributable — run
+   `python3 scripts/proposals.py` and read the **"Recommended shipping slate
+   (at most one per instrument)"** section, which already picks each
+   instrument's strongest qualified proposal. For each instrument you choose to
+   act on, ship that single proposal; never ship two changes to the same
+   instrument in one night, and never bundle multiple instruments into one
+   commit — one commit (and ideally one PR) per instrument so each is
+   attributable on its own. The rest stay in the queue for future nights.
 
-A large queue is useful signal, not a mandate to batch changes. Batching
-makes attribution impossible: if results improve or worsen, you won't know why.
+A large queue is useful signal, not a mandate to batch changes *within* an
+instrument. Stacking two changes onto the same book makes attribution
+impossible: if its results move, you won't know which change did it.
 
 ## Burden of proof — when NOT to change anything
 
@@ -94,9 +98,27 @@ Change nothing unless EITHER:
 - The live digest shows a systematic pattern (≥20 trades) that a specific,
   validated fix addresses (re-entry cooldown, exit-z adjustment, etc.)
 
-A losing day is noise. An optimizer proposal with 8 OOS trades is weak signal.
-An optimizer proposal with 30+ OOS trades AND a plausible mechanism AND
-passing backtests is worth acting on. Only one theme per review — never bundle.
+A losing day is noise. An optimizer proposal with a handful of OOS trades is
+weak signal. A proposal with dozens of OOS trades AND a plausible mechanism AND
+passing backtests is worth acting on. At most one change per instrument per
+review — never two on the same book, never bundle instruments into one commit.
+
+## Other evidence streams (each gated the same way)
+
+Besides parameter proposals in `proposals.jsonl`, the search may produce:
+
+- `state/genome_proposals.jsonl` — *new strategies* discovered by the
+  evolutionary search (composable-DSL genomes), each already past the same
+  hardened gate (folds + perturbation + embargoed held-out + deflated Sharpe).
+- `state/ml_proposals.jsonl` / `state/rl_proposals.jsonl` — qualified ML / RL
+  model *specs* (the engine retrains them on current data; nothing is shipped
+  as a frozen pickle).
+
+Treat these exactly like parameter proposals: act only on qualified ones, at
+most one change per instrument, with a plausible rationale and passing
+`scripts/validate.py`. A genome or model replacing an instrument's strategy is
+a bigger change than a parameter tweak — demand correspondingly stronger
+out-of-sample and held-out evidence before shipping.
 
 ## Patterns in the optimizer history worth noting
 
