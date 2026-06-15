@@ -46,10 +46,28 @@ def run_backtest(
     starting_equity: float = 100_000.0,
     risk_per_trade: float = 0.01,
     instrument: str = "TEST",
+    friction_bps: float = 0.0,
 ) -> BacktestResult:
+    """Replay ``df`` through ``strategy`` with the live risk engine.
+
+    ``friction_bps`` models combined commission + slippage: every fill executes
+    that many basis points *against* the trade (you buy a touch higher, sell a
+    touch lower), so a strategy that only works frictionless cannot pass the
+    gate. Position sizing uses the actual (slipped) fill price, so the hard stop
+    is still priced off what was really paid. Defaults to 0 — the friction-free
+    backtest used by the unit tests; the optimizer/search pass the configured
+    cost so the *trial process* is honest.
+    """
     broker = PaperBroker(starting_equity, state_path=None)
     equity_curve: list[float] = []
     warmup = strategy.min_bars()
+    friction = friction_bps / 1e4
+
+    def _fill(price: float, direction: str, opening: bool) -> float:
+        # adverse slippage: opening a long / closing a short pays up; the reverse
+        # receives less.
+        sign = 1.0 if direction == "long" else -1.0
+        return price * (1.0 + (sign if opening else -sign) * friction)
 
     for i in range(warmup, len(df) + 1):
         window = df.iloc[:i]
@@ -63,12 +81,13 @@ def run_backtest(
         opened_this_bar = False
 
         if signal.action is Action.CLOSE and position is not None:
-            broker.close_position(instrument, close, signal.reason)
+            broker.close_position(instrument, _fill(close, position.direction, opening=False), signal.reason)
         elif signal.opens and position is None and signal.atr > 0:
+            entry_fill = _fill(close, signal.direction, opening=True)
             sized = size_position(
                 equity=broker.equity,
                 risk_per_trade=risk_per_trade,
-                entry_price=close,
+                entry_price=entry_fill,
                 atr=signal.atr,
                 atr_stop_mult=strategy.atr_stop_mult,
                 direction=signal.direction,
@@ -78,7 +97,7 @@ def run_backtest(
                     instrument=instrument,
                     direction=signal.direction,
                     units=sized.units,
-                    entry_price=close,
+                    entry_price=entry_fill,
                     stop_price=sized.stop_price,
                     risk_amount=sized.risk_amount,
                     strategy=strategy.name,
@@ -96,7 +115,8 @@ def run_backtest(
 
     # liquidate at the final close so the result reflects everything
     if instrument in broker.positions:
-        broker.close_position(instrument, float(df["close"].iloc[-1]), "end of backtest")
+        pos = broker.positions[instrument]
+        broker.close_position(instrument, _fill(float(df["close"].iloc[-1]), pos.direction, opening=False), "end of backtest")
 
     wins = sum(1 for t in broker.trades if t.pnl > 0)
     final_equity = broker.equity

@@ -279,6 +279,7 @@ def run_walk_forward(
     inst: InstrumentConfig,
     params: dict,
     risk_per_trade: float = 0.01,
+    friction_bps: float = 0.0,
 ) -> Optional[Trial]:
     """Split df 75/25, run backtest on each half. Returns None if too few bars."""
     bpy = BARS_PER_YEAR.get(inst.timeframe, 252)
@@ -291,8 +292,8 @@ def run_walk_forward(
         if len(train_df) < strategy.min_bars() * 2:
             return None
 
-        is_result = run_backtest(train_df, strategy, risk_per_trade=risk_per_trade, instrument=inst.key)
-        oos_result = run_backtest(oos_df, strategy, risk_per_trade=risk_per_trade, instrument=inst.key)
+        is_result = run_backtest(train_df, strategy, risk_per_trade=risk_per_trade, instrument=inst.key, friction_bps=friction_bps)
+        oos_result = run_backtest(oos_df, strategy, risk_per_trade=risk_per_trade, instrument=inst.key, friction_bps=friction_bps)
     except Exception:
         return None
 
@@ -384,14 +385,14 @@ def perturbation_passes(
     return median_perturbed >= candidate_oos * (1.0 - tolerance) and median_perturbed > baseline_oos
 
 
-def _full_oos_sharpe(df, inst: InstrumentConfig, params: dict, risk_per_trade: float):
+def _full_oos_sharpe(df, inst: InstrumentConfig, params: dict, risk_per_trade: float, friction_bps: float = 0.0):
     """Sharpe + trade count over a whole slice (no train/OOS split), used for
     the embargoed holdout where the entire slice is unseen confirmation data."""
     try:
         strategy = build_strategy(inst.strategy, params, genome=getattr(inst, "genome", None))
         if df is None or len(df) < strategy.min_bars() * 2:
             return None
-        result = run_backtest(df, strategy, risk_per_trade=risk_per_trade, instrument=inst.key)
+        result = run_backtest(df, strategy, risk_per_trade=risk_per_trade, instrument=inst.key, friction_bps=friction_bps)
     except Exception:
         return None
     bpy = BARS_PER_YEAR.get(inst.timeframe, 252)
@@ -406,6 +407,7 @@ def validate_candidate(
     rng: np.random.Generator,
     risk_per_trade: float = 0.01,
     holdout_df=None,
+    friction_bps: float = 0.0,
 ) -> dict:
     """Stage-two testing for a candidate proposal. ``df`` is the search slice
     (everything selection was allowed to see); ``holdout_df`` is the embargoed
@@ -425,8 +427,8 @@ def validate_candidate(
     folds_valid = 0
     fold_details = []
     for fold in validation_folds(df):
-        cand = run_walk_forward(fold, inst, candidate_params, risk_per_trade)
-        curr = run_walk_forward(fold, inst, current_params, risk_per_trade)
+        cand = run_walk_forward(fold, inst, candidate_params, risk_per_trade, friction_bps)
+        curr = run_walk_forward(fold, inst, current_params, risk_per_trade, friction_bps)
         if cand is None or curr is None:
             fold_details.append({"skipped": True})
             continue
@@ -437,23 +439,23 @@ def validate_candidate(
             {"candidate_oos": cand.oos_sharpe, "current_oos": curr.oos_sharpe, "won": won}
         )
 
-    baseline_full = run_walk_forward(df, inst, current_params, risk_per_trade)
+    baseline_full = run_walk_forward(df, inst, current_params, risk_per_trade, friction_bps)
     baseline_oos = baseline_full.oos_sharpe if baseline_full else float("-inf")
-    candidate_full = run_walk_forward(df, inst, candidate_params, risk_per_trade)
+    candidate_full = run_walk_forward(df, inst, candidate_params, risk_per_trade, friction_bps)
     candidate_oos = candidate_full.oos_sharpe if candidate_full else float("-inf")
 
     perturbed_sharpes = []
     for _ in range(PERTURBATIONS):
         jittered = perturb_params(candidate_params, inst, rng)
-        trial = run_walk_forward(df, inst, jittered, risk_per_trade)
+        trial = run_walk_forward(df, inst, jittered, risk_per_trade, friction_bps)
         if trial is not None:
             perturbed_sharpes.append(trial.oos_sharpe)
     median_perturbed = float(np.median(perturbed_sharpes)) if perturbed_sharpes else float("-inf")
 
     # Held-out confirmation on the embargoed tail (whole slice, no re-split).
     holdout_checked = holdout_df is not None
-    cand_h = _full_oos_sharpe(holdout_df, inst, candidate_params, risk_per_trade) if holdout_checked else None
-    curr_h = _full_oos_sharpe(holdout_df, inst, current_params, risk_per_trade) if holdout_checked else None
+    cand_h = _full_oos_sharpe(holdout_df, inst, candidate_params, risk_per_trade, friction_bps) if holdout_checked else None
+    curr_h = _full_oos_sharpe(holdout_df, inst, current_params, risk_per_trade, friction_bps) if holdout_checked else None
     holdout_candidate_sharpe = cand_h[0] if cand_h else float("-inf")
     holdout_current_sharpe = curr_h[0] if curr_h else float("-inf")
     holdout_trades = cand_h[1] if cand_h else 0
@@ -518,8 +520,8 @@ def _wf_worker(args):
     """Top-level (picklable) wrapper so backtests can run in worker processes.
     Pure: it only reads its inputs and returns a Trial, so the result is
     identical regardless of which process computes it."""
-    search_df, inst, params, risk = args
-    return run_walk_forward(search_df, inst, params, risk)
+    search_df, inst, params, risk, friction = args
+    return run_walk_forward(search_df, inst, params, risk, friction)
 
 
 class ContinuousOptimizer:
@@ -530,12 +532,14 @@ class ContinuousOptimizer:
         proposals: ProposalStore,
         fetch_fn=None,
         seed: Optional[int] = None,
+        friction_bps: float = 0.0,
     ):
         self.config = config
         self.history = history
         self.proposals = proposals
         self.fetch_fn = fetch_fn or self._default_fetch
         self.rng = np.random.default_rng(seed)
+        self.friction_bps = friction_bps
         self._data_cache: dict[str, tuple[float, object]] = {}
 
     def _default_fetch(self, symbol: str, timeframe: str, days: int):
@@ -566,7 +570,7 @@ class ContinuousOptimizer:
         existing = self.history.baseline(inst.key, params=current)
         if existing is not None:
             return existing["oos_sharpe"]
-        trial = run_walk_forward(search_df, inst, current, self.config.account.risk_per_trade)
+        trial = run_walk_forward(search_df, inst, current, self.config.account.risk_per_trade, self.friction_bps)
         if trial is None:
             return float("-inf")
         trial.is_baseline = True
@@ -664,7 +668,7 @@ class ContinuousOptimizer:
         if not param_sets:
             return []
 
-        work = [(search_df, inst, params, risk) for params in param_sets]
+        work = [(search_df, inst, params, risk, self.friction_bps) for params in param_sets]
         if pool is not None and len(work) > 1:
             results = list(pool.map(_wf_worker, work))
         else:
@@ -712,6 +716,7 @@ class ContinuousOptimizer:
             self.rng,
             self.config.account.risk_per_trade,
             holdout_df=holdout_df,
+            friction_bps=self.friction_bps,
         )
         status = QUALIFIED if verdict["qualified"] else REJECTED
         self.proposals.set_status(

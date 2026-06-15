@@ -76,6 +76,7 @@ def main() -> None:
     optimizer = ContinuousOptimizer(
         config, history, proposals,
         fetch_fn=lambda symbol, timeframe, days: source.fetch(symbol, timeframe, days),
+        friction_bps=config.costs.friction_bps,
     )
 
     try:

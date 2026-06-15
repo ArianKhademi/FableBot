@@ -268,18 +268,18 @@ def genome_instrument(symbol: str, timeframe: str, genome: dict, key: Optional[s
     )
 
 
-def evaluate_genome(df, symbol: str, timeframe: str, genome: dict, risk_per_trade: float = 0.01):
+def evaluate_genome(df, symbol: str, timeframe: str, genome: dict, risk_per_trade: float = 0.01, friction_bps: float = 0.0):
     """Walk-forward a genome on ``df``; returns the Trial (or None)."""
     from .optimizer import run_walk_forward
 
-    return run_walk_forward(df, genome_instrument(symbol, timeframe, genome), {}, risk_per_trade)
+    return run_walk_forward(df, genome_instrument(symbol, timeframe, genome), {}, risk_per_trade, friction_bps)
 
 
 def _eval_worker(args):
     """Picklable: evaluate one genome and return (oos_sharpe, oos_trades) so a
     generation can be scored across worker processes."""
-    df, symbol, timeframe, genome, risk = args
-    trial = evaluate_genome(df, symbol, timeframe, genome, risk)
+    df, symbol, timeframe, genome, risk, friction = args
+    trial = evaluate_genome(df, symbol, timeframe, genome, risk, friction)
     if trial is None:
         return (float("-inf"), 0)
     return (trial.oos_sharpe, trial.oos_trades)
@@ -327,6 +327,7 @@ def validate_genome(
     n_trials: int = 0,
     sr_std_perbar: float = 0.0,
     risk_per_trade: float = 0.01,
+    friction_bps: float = 0.0,
 ) -> dict:
     """Apply the hardened gate to an *evolved genome* vs the instrument's
     current genome: non-overlapping regime folds, a parameter-perturbation
@@ -347,21 +348,21 @@ def validate_genome(
 
     folds_won = folds_valid = 0
     for fold in validation_folds(search_df):
-        c = run_walk_forward(fold, cand_inst, {}, risk_per_trade)
-        b = run_walk_forward(fold, curr_inst, {}, risk_per_trade)
+        c = run_walk_forward(fold, cand_inst, {}, risk_per_trade, friction_bps)
+        b = run_walk_forward(fold, curr_inst, {}, risk_per_trade, friction_bps)
         if c is None or b is None:
             continue
         folds_valid += 1
         folds_won += int(c.oos_sharpe > b.oos_sharpe)
 
-    cand_full = run_walk_forward(search_df, cand_inst, {}, risk_per_trade)
-    curr_full = run_walk_forward(search_df, curr_inst, {}, risk_per_trade)
+    cand_full = run_walk_forward(search_df, cand_inst, {}, risk_per_trade, friction_bps)
+    curr_full = run_walk_forward(search_df, curr_inst, {}, risk_per_trade, friction_bps)
     candidate_oos = cand_full.oos_sharpe if cand_full else float("-inf")
     baseline_oos = curr_full.oos_sharpe if curr_full else float("-inf")
 
     perturbed = []
     for _ in range(PERTURBATIONS):
-        t = run_walk_forward(search_df, genome_instrument(symbol, timeframe, _perturb_genome(candidate, rng)), {}, risk_per_trade)
+        t = run_walk_forward(search_df, genome_instrument(symbol, timeframe, _perturb_genome(candidate, rng)), {}, risk_per_trade, friction_bps)
         if t is not None:
             perturbed.append(t.oos_sharpe)
     median_perturbed = float(np.median(perturbed)) if perturbed else float("-inf")
@@ -375,7 +376,7 @@ def validate_genome(
             strat = inst_strategy(inst)
             if holdout_df is None or len(holdout_df) < strat.min_bars() * 2:
                 return None
-            res = run_backtest(holdout_df, strat, risk_per_trade=risk_per_trade, instrument=inst.key)
+            res = run_backtest(holdout_df, strat, risk_per_trade=risk_per_trade, instrument=inst.key, friction_bps=friction_bps)
         except Exception:
             return None
         return sharpe_ratio(res.equity_curve, BARS_PER_YEAR.get(timeframe, 252)), res.trades

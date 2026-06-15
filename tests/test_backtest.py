@@ -32,6 +32,28 @@ def test_backtest_losses_capped_at_risk_budget():
     assert result.max_drawdown_pct < 100.0
 
 
+def test_friction_defaults_off_and_drags_returns():
+    df = make_ohlcv(np.linspace(100, 200, 300), freq="4h")
+    strat = lambda: build_strategy(
+        "trend_following", {"fast_ema": 20, "slow_ema": 50, "atr_period": 14, "atr_stop_mult": 3.0})
+    free = run_backtest(df, strat())
+    free_again = run_backtest(df, strat(), friction_bps=0.0)
+    assert free.total_pnl == free_again.total_pnl  # default is exactly friction-free
+    costed = run_backtest(df, strat(), friction_bps=10.0)
+    # friction is a strict drag on a profitable run, and never improves PnL
+    assert costed.total_pnl < free.total_pnl
+
+
+def test_friction_keeps_losses_bounded():
+    rng = np.random.default_rng(11)
+    df = make_ohlcv(100 + np.cumsum(rng.normal(0, 2.0, 400)))
+    strat = build_strategy(
+        "momentum_breakout", {"entry_channel": 20, "exit_channel": 10, "atr_period": 14, "atr_stop_mult": 2.5})
+    result = run_backtest(df, strat, friction_bps=5.0)
+    assert result.trades > 0
+    assert result.max_drawdown_pct < 100.0  # slippage doesn't blow past the floor
+
+
 def test_backtest_equity_curve_length_matches_bars():
     df = make_ohlcv(np.linspace(100, 120, 100), freq="4h")
     strat = build_strategy(

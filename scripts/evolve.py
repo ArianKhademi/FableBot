@@ -34,13 +34,13 @@ from fablebot.optimizer import BARS_PER_YEAR, split_search_holdout
 ROOT = Path(__file__).resolve().parent.parent
 
 
-def evaluate_generation(ga, df, symbol, timeframe, risk, pool, oos_sharpes):
+def evaluate_generation(ga, df, symbol, timeframe, risk, friction, pool, oos_sharpes):
     pending = []
     g = ga.ask()
     while g is not None:
         pending.append(g)
         g = ga.ask()
-    args = [(df, symbol, timeframe, g, risk) for g in pending]
+    args = [(df, symbol, timeframe, g, risk, friction) for g in pending]
     results = list(pool.map(search._eval_worker, args)) if pool else [search._eval_worker(a) for a in args]
     for genome, (sharpe, trades) in zip(pending, results):
         ga.tell(genome, search.genome_fitness(sharpe, trades))
@@ -50,6 +50,7 @@ def evaluate_generation(ga, df, symbol, timeframe, risk, pool, oos_sharpes):
 
 def evolve_instrument(inst, df, args, pool, proposals_path):
     risk = 0.01
+    friction = getattr(args, "friction_bps", 0.0)
     search_df, holdout_df = split_search_holdout(df)
     rng = np.random.default_rng(args.seed)
     pop_path = ROOT / "state" / f"population_{inst.key}.json"
@@ -61,10 +62,10 @@ def evolve_instrument(inst, df, args, pool, proposals_path):
 
     oos_sharpes: list[float] = []
     for gen in range(args.generations):
-        evaluate_generation(ga, search_df, inst.symbol, inst.timeframe, risk, pool, oos_sharpes)
+        evaluate_generation(ga, search_df, inst.symbol, inst.timeframe, risk, friction, pool, oos_sharpes)
         ga.evolve()
         ga.save(pop_path)
-    evaluate_generation(ga, search_df, inst.symbol, inst.timeframe, risk, pool, oos_sharpes)
+    evaluate_generation(ga, search_df, inst.symbol, inst.timeframe, risk, friction, pool, oos_sharpes)
     ga.save(pop_path)
 
     leaders = ga.best(args.top)
@@ -83,6 +84,7 @@ def evolve_instrument(inst, df, args, pool, proposals_path):
         search_df, holdout_df, inst.symbol, inst.timeframe,
         candidate=best_genome, current=current, rng=rng,
         n_trials=n_trials, sr_std_perbar=sr_std_perbar, risk_per_trade=risk,
+        friction_bps=friction,
     )
     status = "QUALIFIED" if verdict["qualified"] else "rejected"
     print(f"  [{status}] best genome vs current — {verdict['reason']}")
@@ -117,6 +119,7 @@ def main() -> None:
     args = parser.parse_args()
 
     config = load_config(args.config)
+    args.friction_bps = config.costs.friction_bps
     proposals_path = Path(args.genome_proposals)
 
     from fablebot.config import universe_instruments

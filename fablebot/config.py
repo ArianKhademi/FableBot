@@ -66,6 +66,13 @@ class UniverseConfig:
 
 
 @dataclass
+class CostsConfig:
+    # Combined commission + slippage applied to every backtest fill during the
+    # *trial process* so the gate can't certify a frictionless-only edge.
+    friction_bps: float = 3.0
+
+
+@dataclass
 class Config:
     account: AccountConfig
     schedule: ScheduleConfig
@@ -73,6 +80,7 @@ class Config:
     instruments: dict[str, InstrumentConfig]
     data: DataConfig = field(default_factory=DataConfig)
     universe: UniverseConfig = field(default_factory=UniverseConfig)
+    costs: CostsConfig = field(default_factory=CostsConfig)
 
 
 def load_config(path: str | Path) -> Config:
@@ -88,6 +96,7 @@ def load_config(path: str | Path) -> Config:
         instruments=instruments,
         data=DataConfig(**raw.get("data", {})),
         universe=UniverseConfig(**raw.get("universe", {})),
+        costs=CostsConfig(**raw.get("costs", {})),
     )
 
 

@@ -66,10 +66,11 @@ def main() -> None:
             continue
 
         search_df, holdout_df = split_search_holdout(df)
+        friction = config.costs.friction_bps
         # quick scan to estimate the multiple-comparison benchmark
         oos_sharpes = []
         for seed in range(6):
-            t = ml.ml_walk_forward(search_df, inst, model_kwargs=model_kwargs, seed=seed)
+            t = ml.ml_walk_forward(search_df, inst, model_kwargs=model_kwargs, seed=seed, friction_bps=friction)
             if t is not None and np.isfinite(t.oos_sharpe):
                 oos_sharpes.append(t.oos_sharpe)
         bpy = BARS_PER_YEAR.get(inst.timeframe, 252)
@@ -79,6 +80,7 @@ def main() -> None:
             search_df, holdout_df, inst, current_genome=current_genome_for(inst),
             rng=np.random.default_rng(0), n_trials=len(oos_sharpes) * 50,
             sr_std_perbar=sr_std_perbar, model_kwargs={**model_kwargs, "horizon": args.horizon},
+            friction_bps=friction,
         )
         status = "QUALIFIED" if verdict["qualified"] else "rejected"
         print(f"[ml] {inst.key}: [{status}] {verdict['reason']}", flush=True)

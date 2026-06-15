@@ -278,7 +278,7 @@ class MLStrategy(Strategy):
 # ── walk-forward + hardened-gate validation for ML ───────────────────────────
 
 
-def ml_walk_forward(df, inst, oos_frac=0.25, risk_per_trade=0.01, model_kwargs=None, seed=0):
+def ml_walk_forward(df, inst, oos_frac=0.25, risk_per_trade=0.01, model_kwargs=None, seed=0, friction_bps=0.0):
     """Fit an MLModel on the train split, then backtest it in/out-of-sample.
     Returns an optimizer.Trial (so it flows through the existing pipeline) or
     None when there isn't enough data to train."""
@@ -294,8 +294,8 @@ def ml_walk_forward(df, inst, oos_frac=0.25, risk_per_trade=0.01, model_kwargs=N
     if len(oos_df) < strat.min_bars() * 2 or len(train_df) < strat.min_bars() * 2:
         return None
     bpy = BARS_PER_YEAR.get(inst.timeframe, 252)
-    is_res = run_backtest(train_df, MLStrategy(model).prepare(train_df), risk_per_trade=risk_per_trade, instrument=inst.key)
-    oos_res = run_backtest(oos_df, MLStrategy(model).prepare(oos_df), risk_per_trade=risk_per_trade, instrument=inst.key)
+    is_res = run_backtest(train_df, MLStrategy(model).prepare(train_df), risk_per_trade=risk_per_trade, instrument=inst.key, friction_bps=friction_bps)
+    oos_res = run_backtest(oos_df, MLStrategy(model).prepare(oos_df), risk_per_trade=risk_per_trade, instrument=inst.key, friction_bps=friction_bps)
     return Trial(
         instrument=inst.key, strategy="ml_gbt", timeframe=inst.timeframe,
         params={"horizon": model.horizon, "seed": seed, **(model_kwargs or {})},
@@ -308,7 +308,7 @@ def ml_walk_forward(df, inst, oos_frac=0.25, risk_per_trade=0.01, model_kwargs=N
     )
 
 
-def _fit_and_backtest(df_train, df_eval, inst, risk, seed, model_kwargs):
+def _fit_and_backtest(df_train, df_eval, inst, risk, seed, model_kwargs, friction_bps=0.0):
     """Train on df_train, score sharpe on the whole df_eval slice (no re-split)."""
     from .backtest import run_backtest
     from .optimizer import BARS_PER_YEAR, sharpe_ratio
@@ -320,12 +320,12 @@ def _fit_and_backtest(df_train, df_eval, inst, risk, seed, model_kwargs):
     if len(df_eval) < strat.min_bars() * 2:
         return None
     strat.prepare(df_eval)
-    res = run_backtest(df_eval, strat, risk_per_trade=risk, instrument=inst.key)
+    res = run_backtest(df_eval, strat, risk_per_trade=risk, instrument=inst.key, friction_bps=friction_bps)
     return sharpe_ratio(res.equity_curve, BARS_PER_YEAR.get(inst.timeframe, 252)), res.trades
 
 
 def validate_ml(search_df, holdout_df, inst, current_genome, rng,
-                n_trials=0, sr_std_perbar=0.0, risk_per_trade=0.01, model_kwargs=None):
+                n_trials=0, sr_std_perbar=0.0, risk_per_trade=0.01, model_kwargs=None, friction_bps=0.0):
     """Hardened gate for an ML model vs the instrument's current strategy.
 
     Folds: model retrained per non-overlapping fold (train half) and scored on
@@ -348,35 +348,35 @@ def validate_ml(search_df, holdout_df, inst, current_genome, rng,
     folds_won = folds_valid = 0
     for fold in validation_folds(search_df):
         s = int(len(fold) * 0.75)
-        ml = _fit_and_backtest(fold.iloc[:s], fold.iloc[s:], inst, risk_per_trade, 0, model_kwargs)
-        cur = run_walk_forward(fold, curr_inst, {}, risk_per_trade)
+        ml = _fit_and_backtest(fold.iloc[:s], fold.iloc[s:], inst, risk_per_trade, 0, model_kwargs, friction_bps)
+        cur = run_walk_forward(fold, curr_inst, {}, risk_per_trade, friction_bps)
         if ml is None or cur is None:
             continue
         folds_valid += 1
         folds_won += int(ml[0] > cur.oos_sharpe)
 
-    main = ml_walk_forward(search_df, inst, risk_per_trade=risk_per_trade, model_kwargs=model_kwargs, seed=0)
+    main = ml_walk_forward(search_df, inst, risk_per_trade=risk_per_trade, model_kwargs=model_kwargs, seed=0, friction_bps=friction_bps)
     candidate_oos = main.oos_sharpe if main else float("-inf")
-    base_full = run_walk_forward(search_df, curr_inst, {}, risk_per_trade)
+    base_full = run_walk_forward(search_df, curr_inst, {}, risk_per_trade, friction_bps)
     baseline_oos = base_full.oos_sharpe if base_full else float("-inf")
 
     reseeded = []
     for s in (1, 2, 3):
-        r = ml_walk_forward(search_df, inst, risk_per_trade=risk_per_trade, model_kwargs=model_kwargs, seed=s)
+        r = ml_walk_forward(search_df, inst, risk_per_trade=risk_per_trade, model_kwargs=model_kwargs, seed=s, friction_bps=friction_bps)
         if r is not None:
             reseeded.append(r.oos_sharpe)
     median_reseed = float(np.median(reseeded)) if reseeded else float("-inf")
 
     # held-out: fit on the whole search slice, evaluate on the embargoed tail
     split = int(len(search_df) * 0.75)
-    cand_h = _fit_and_backtest(search_df.iloc[:split], holdout_df, inst, risk_per_trade, 0, model_kwargs) if holdout_df is not None else None
+    cand_h = _fit_and_backtest(search_df.iloc[:split], holdout_df, inst, risk_per_trade, 0, model_kwargs, friction_bps) if holdout_df is not None else None
     curr_h = None
     if holdout_df is not None:
         from .strategies import build_strategy
         try:
             strat = build_strategy(curr_inst.strategy, {}, genome=curr_inst.genome)
             if len(holdout_df) >= strat.min_bars() * 2:
-                res = run_backtest(holdout_df, strat, risk_per_trade=risk_per_trade, instrument=inst.key)
+                res = run_backtest(holdout_df, strat, risk_per_trade=risk_per_trade, instrument=inst.key, friction_bps=friction_bps)
                 curr_h = (sharpe_ratio(res.equity_curve, bpy), res.trades)
         except Exception:
             curr_h = None
