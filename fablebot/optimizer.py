@@ -286,7 +286,7 @@ def run_walk_forward(
     oos_df = df.iloc[split:]
 
     try:
-        strategy = build_strategy(inst.strategy, params)
+        strategy = build_strategy(inst.strategy, params, genome=getattr(inst, "genome", None))
         if len(train_df) < strategy.min_bars() * 2:
             return None
 
@@ -387,7 +387,7 @@ def _full_oos_sharpe(df, inst: InstrumentConfig, params: dict, risk_per_trade: f
     """Sharpe + trade count over a whole slice (no train/OOS split), used for
     the embargoed holdout where the entire slice is unseen confirmation data."""
     try:
-        strategy = build_strategy(inst.strategy, params)
+        strategy = build_strategy(inst.strategy, params, genome=getattr(inst, "genome", None))
         if df is None or len(df) < strategy.min_bars() * 2:
             return None
         result = run_backtest(df, strategy, risk_per_trade=risk_per_trade, instrument=inst.key)

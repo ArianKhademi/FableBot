@@ -40,6 +40,10 @@ class InstrumentConfig:
     # space. Only params listed here are varied; the rest are frozen at their
     # current value. Integer params (lookback, channels) are rounded to int.
     param_bounds: dict = field(default_factory=dict)
+    # Optional composable-DSL genome. When present the instrument runs a
+    # GenomeStrategy built from this spec instead of the named ``strategy``;
+    # ``strategy`` then just labels it. Lets any genome trade any symbol.
+    genome: dict | None = None
 
 
 @dataclass

@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from .base import Action, Signal, Strategy
 from .mean_reversion import MeanReversion
 from .momentum_breakout import MomentumBreakout
@@ -10,7 +12,13 @@ STRATEGIES: dict[str, type[Strategy]] = {
 }
 
 
-def build_strategy(name: str, params: dict) -> Strategy:
+def build_strategy(name: str, params: dict, genome: dict | None = None) -> Strategy:
+    """Instantiate a strategy. With ``genome`` set, build a composable
+    :class:`~fablebot.dsl.GenomeStrategy` (any genome on any symbol); otherwise
+    look ``name`` up in the hand-written registry."""
+    if genome is not None:
+        from ..dsl import GenomeStrategy  # lazy: avoids an import cycle via base
+        return GenomeStrategy(genome)
     try:
         cls = STRATEGIES[name]
     except KeyError:
