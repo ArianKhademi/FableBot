@@ -16,3 +16,5 @@ Cull stage totals (where the old survivors now fail):
 - improvement: 555
 - deflated_sharpe: 354
 - trade_floor: 75
+
+Applied: demoted 984 proposals to 'rejected' in /Users/ariankhademi/Documents/Business/FableBot/state/proposals.jsonl.

@@ -13,8 +13,15 @@ the window overlaps the original heavily; for 15m it has largely rolled over, so
 those are "do these params still hold" rather than "would they have qualified
 then". The breakdown is printed per instrument so you can weight accordingly.
 
-  python3 scripts/revalidate_qualified.py
+  python3 scripts/revalidate_qualified.py                  # report only (read-only)
   python3 scripts/revalidate_qualified.py --sample 50 --workers 8
+  python3 scripts/revalidate_qualified.py --apply          # also demote the failures
+
+With --apply, every proposal that fails re-validation is transitioned to
+'rejected' in the proposal store (append-only, with a dated reason) — so stale
+proposals that qualified under the old gate stop showing as 'qualified' and the
+nightly reviewer / shipping slate no longer surface them. Without --apply the
+proposal store is never modified.
 """
 
 import argparse
@@ -23,6 +30,7 @@ import json
 import os
 import sys
 from concurrent.futures import ProcessPoolExecutor
+from datetime import datetime, timezone
 from pathlib import Path
 
 import numpy as np
@@ -76,11 +84,20 @@ def main() -> None:
     parser.add_argument("--sample", type=int, default=None, help="re-test only N per instrument (sanity/speed)")
     parser.add_argument("--workers", type=int, default=os.cpu_count() or 1)
     parser.add_argument("--write", help="also write the report to this path")
+    parser.add_argument(
+        "--apply", action="store_true",
+        help="demote proposals that fail re-validation to 'rejected' (append-only, "
+             "with reason) so the stale old-gate qualifieds stop resurfacing",
+    )
     args = parser.parse_args()
 
     config = load_config(args.config)
     friction = config.costs.friction_bps
     history = BacktestHistory(args.history)
+    from fablebot.pipeline import REJECTED, ProposalStore
+    store = ProposalStore(args.proposals) if args.apply else None
+    today = datetime.now(timezone.utc).date().isoformat()
+    demoted = 0
 
     # latest status + the candidate row (params/instrument) per proposal id
     events = [json.loads(l) for l in Path(args.proposals).read_text().splitlines() if l.strip()]
@@ -141,6 +158,14 @@ def main() -> None:
             print(f"[revalidate] {key}: {survived}/{len(props)} still qualify "
                   f"({survived/len(props)*100:.0f}%) — culls: "
                   f"{dict((k,v) for k,v in stages.items() if k!='qualified')}", flush=True)
+            if store is not None:
+                for p, stage in zip(props, results):
+                    if stage != "qualified":
+                        store.set_status(
+                            p["proposal_id"], REJECTED,
+                            reason=f"re-validation under hardened gate ({today}): failed at {stage}",
+                        )
+                        demoted += 1
     finally:
         if pool is not None:
             pool.shutdown()
@@ -161,6 +186,8 @@ def main() -> None:
     for stage, c in overall.most_common():
         if stage != "qualified":
             lines.append(f"- {stage}: {c}")
+    if store is not None:
+        lines += ["", f"Applied: demoted {demoted} proposals to 'rejected' in {args.proposals}."]
     report = "\n".join(lines)
     print("\n" + report)
     if args.write:

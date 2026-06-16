@@ -86,6 +86,29 @@ def test_cycle_opens_sized_position_with_stop():
     assert pos.units * (pos.entry_price - pos.stop_price) == pytest.approx(1000.0)
 
 
+def test_engine_runs_a_configured_genome_through_the_risk_engine():
+    """An instrument carrying a composable-DSL `genome` must trade that genome
+    live (not its named strategy), still sized/stopped by the risk engine."""
+    from fablebot import dsl
+    from fablebot.dsl import GenomeStrategy
+
+    cfg = make_config()
+    cfg.instruments["SPX"] = InstrumentConfig(
+        "SPX", "^GSPC", "S&P 500", "mean_reversion", "15m", {}, genome=dsl.seed_mean_reversion()
+    )
+    engine = TradingEngine(
+        cfg, state_path=None,
+        fetch=FakeFeed({"^GSPC": dip(1), "^IXIC": flat(2), "BTC-USD": flat(3)}),
+        notifier=SilentNotifier(),
+    )
+    assert isinstance(engine.strategies["SPX"], GenomeStrategy)
+    log = engine.run_cycle()
+    assert any("SPX: opened long" in line for line in log)
+    pos = engine.broker.positions["SPX"]
+    assert pos.risk_amount == pytest.approx(1000.0)
+    assert pos.units * (pos.entry_price - pos.stop_price) == pytest.approx(1000.0)
+
+
 def test_correlation_filter_blocks_third_risk_on_long():
     breakout = make_ohlcv(list(noisy_flat(40, seed=4)) + [110.0])
     frames = {"^GSPC": dip(1), "^IXIC": dip(2), "BTC-USD": breakout}
