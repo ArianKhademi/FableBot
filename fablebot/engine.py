@@ -61,7 +61,7 @@ class TradingEngine:
             config.correlation.max_same_direction_per_group,
         )
         self.strategies = {
-            key: build_strategy(inst.strategy, inst.params)
+            key: build_strategy(inst.strategy, inst.params, genome=getattr(inst, "genome", None))
             for key, inst in config.instruments.items()
         }
         self.last_prices: dict[str, float] = {}
