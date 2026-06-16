@@ -111,6 +111,36 @@ def test_get_source_unknown_raises():
         data.get_source("nope")
 
 
+# ── per-instrument source routing (crypto -> Binance) ────────────────────────
+
+def test_binance_symbol_translation():
+    assert data._to_binance_symbol("BTC-USD") == "BTCUSDT"
+    assert data._to_binance_symbol("ETH/USD") == "ETHUSDT"
+    assert data._to_binance_symbol("BTCUSDT") == "BTCUSDT"
+
+
+def test_routing_source_dispatches_by_symbol():
+    eq = _StubSource(make_ohlcv(np.linspace(100, 110, 30), freq="1d"))
+    cr = _StubSource(make_ohlcv(np.linspace(200, 210, 30), freq="1d"))
+    router = data.RoutingSource(default=eq, routes={"BTC-USD": cr})
+    router.fetch("AAPL", "1d")
+    router.fetch("BTC-USD", "1d")
+    assert eq.calls == 1 and cr.calls == 1  # each went to its own backend
+
+
+def test_source_from_config_routes_crypto_to_binance():
+    config = load_config("config.yaml")
+    # uncached (live feed): BTC routes to a raw BinanceSource, equities to default
+    live = data.source_from_config(config, cache_dir=None)
+    assert isinstance(live, data.RoutingSource)
+    assert isinstance(live.routes["BTC-USD"], data.BinanceSource)
+    assert isinstance(live.default, data.YFinanceSource)
+    # cached (history feed): routed backends are wrapped in the on-disk cache
+    cached = data.source_from_config(config, cache_dir="state/data_cache")
+    assert isinstance(cached.routes["BTC-USD"], data.CachedSource)
+    assert isinstance(cached.routes["BTC-USD"].source, data.BinanceSource)
+
+
 # ── universe config + screener ───────────────────────────────────────────────
 
 def test_config_loads_universe_and_data(tmp_path):

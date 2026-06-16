@@ -49,6 +49,10 @@ class InstrumentConfig:
     # current deep history (and re-trains on a schedule) and trades it instead
     # of the named strategy. Takes precedence over ``genome``.
     model: dict | None = None
+    # Optional per-instrument data source override (e.g. "binance" for crypto).
+    # Falls back to config.data.source when unset. The symbol is translated as
+    # needed (BTC-USD -> BTCUSDT for Binance), so news/display stay on Yahoo.
+    source: str | None = None
 
 
 @dataclass
@@ -122,6 +126,7 @@ def universe_instruments(config: Config) -> list[InstrumentConfig]:
                 timeframe=spec.get("timeframe", uni.default_timeframe),
                 params=spec.get("params", {}),
                 param_bounds=spec.get("param_bounds", {}),
+                source=spec.get("source"),
             )
         )
     return out

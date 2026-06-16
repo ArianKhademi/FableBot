@@ -28,22 +28,25 @@ def main() -> None:
 
     config = load_config(args.config)
 
-    # Deep-history fetch for training any live ML/RL models (the live per-cycle
-    # feed is too shallow to train on). Cached so daily retrains don't re-hit
-    # the network. Only used by instruments with a `model` block.
-    from fablebot.data import get_source
+    # Two routed sources (per-instrument backend, e.g. crypto -> Binance):
+    #  - live feed: UNcached so each cycle trades on fresh prices.
+    #  - history feed: cached + deep, for training live ML/RL models (the live
+    #    window is too shallow to train on); daily retrains hit the cache.
+    from fablebot.data import source_from_config
     from fablebot.optimizer import OPTIMIZER_FETCH_DAYS
     cache_dir = config.data.cache_dir
     if cache_dir and not Path(cache_dir).is_absolute():
         cache_dir = ROOT / cache_dir
-    source = get_source(config.data.source, cache_dir=cache_dir, ttl_minutes=config.data.cache_ttl_minutes)
+    live_source = source_from_config(config, cache_dir=None)
+    history_source = source_from_config(config, cache_dir=cache_dir)
 
     def history_fetch(symbol: str, timeframe: str):
-        return source.fetch(symbol, timeframe, days=OPTIMIZER_FETCH_DAYS.get(timeframe, 60))
+        return history_source.fetch(symbol, timeframe, days=OPTIMIZER_FETCH_DAYS.get(timeframe, 60))
 
     engine = TradingEngine(
         config,
         state_path=ROOT / "state/portfolio.json",
+        fetch=live_source.fetch,
         journal_path=ROOT / "state/journal.jsonl",
         shadow_state_path=ROOT / "state/shadow.json",
         history_fetch=history_fetch,

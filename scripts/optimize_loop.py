@@ -64,12 +64,13 @@ def main() -> None:
         # Restrict to the single instrument by hiding the others
         config.instruments = {args.instrument: config.instruments[args.instrument]}
 
-    # Fetch through the configured (optionally cached) data source.
-    from fablebot.data import get_source
+    # Fetch through the configured (cached) data source, honouring per-instrument
+    # source overrides (e.g. crypto -> Binance).
+    from fablebot.data import source_from_config
     cache_dir = config.data.cache_dir
     if cache_dir and not Path(cache_dir).is_absolute():
         cache_dir = ROOT / cache_dir
-    source = get_source(config.data.source, cache_dir=cache_dir, ttl_minutes=config.data.cache_ttl_minutes)
+    source = source_from_config(config, cache_dir=cache_dir)
 
     history = BacktestHistory(args.history)
     proposals = ProposalStore(args.proposals)
