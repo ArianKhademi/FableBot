@@ -131,6 +131,13 @@ most one change per instrument, with a plausible rationale and passing
 a bigger change than a parameter tweak — demand correspondingly stronger
 out-of-sample and held-out evidence before shipping.
 
+- `state/rotation_proposals.jsonl` — daily universe-rotation recommendations
+  (which instruments the live book should add/drop). You may act on one by
+  adding or removing an instrument in `config.yaml`'s `instruments:` block, but
+  **never drop an instrument that has an open position** (the scan marks those
+  sticky), keep within the concurrency cap, and prefer adding a strong newcomer
+  over churning the book on a marginal score. One book change per night.
+
 ## Patterns in the optimizer history worth noting
 
 Check `backtest_history.jsonl` for:

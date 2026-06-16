@@ -225,6 +225,11 @@ can be proposed. Full brief: [`docs/phase-2-learning-engine.md`](docs/phase-2-le
   frictionless-only edge.
 - **Unified engine** (`scripts/run_engine.py`) — one orchestrator that advances
   the numeric optimizer and the evolutionary genome search together.
+- **Dynamic universe rotation** (`scripts/rotate_universe.py`) — a daily scan
+  scores the whole universe by the best gated edge per symbol and proposes which
+  instruments the live book should trade, instead of a fixed five. Guardrailed:
+  open positions are sticky (never force-closed to rotate), concurrency is
+  capped, and hysteresis resists churn. It recommends; the reviewer applies.
 
 ## Running the full system
 
