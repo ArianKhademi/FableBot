@@ -47,9 +47,14 @@ class TradingEngine:
         notifier: Optional[Notifier] = None,
         journal_path: Optional[Path] = None,
         shadow_state_path: Optional[Path] = None,
+        history_fetch: Optional[FetchFn] = None,
     ):
         self.config = config
         self.fetch = fetch
+        # Deep-history fetch used to train model-backed instruments; falls back
+        # to the live feed if not supplied (which may be too shallow to train —
+        # then the instrument falls back to its named strategy).
+        self.history_fetch = history_fetch or fetch
         self.notifier = notifier or Notifier()
         self.broker = PaperBroker(config.account.starting_equity, state_path)
         # The shadow book holds trades the correlation filter blocked: same
@@ -60,11 +65,37 @@ class TradingEngine:
             config.correlation.groups,
             config.correlation.max_same_direction_per_group,
         )
-        self.strategies = {
-            key: build_strategy(inst.strategy, inst.params, genome=getattr(inst, "genome", None))
-            for key, inst in config.instruments.items()
-        }
+        self.strategies = self._build_strategies()
         self.last_prices: dict[str, float] = {}
+
+    def _build_one_strategy(self, inst: InstrumentConfig):
+        """Build the strategy for one instrument. A `model` spec trains a live
+        ML/RL model on deep history; on insufficient data it falls back to the
+        named strategy/genome so the bot never goes dark."""
+        model_cfg = getattr(inst, "model", None)
+        if model_cfg:
+            from .live_models import build_model_strategy
+            try:
+                df = self.history_fetch(inst.symbol, inst.timeframe)
+                strat = build_model_strategy(model_cfg, df)
+            except Exception as exc:
+                print(f"[engine] {inst.key}: model fetch/train failed ({exc})", flush=True)
+                strat = None
+            if strat is not None:
+                print(f"[engine] {inst.key}: trained live model '{model_cfg.get('type')}'", flush=True)
+                return strat
+            print(f"[engine] {inst.key}: model not ready — falling back to '{inst.strategy}'", flush=True)
+        return build_strategy(inst.strategy, inst.params, genome=getattr(inst, "genome", None))
+
+    def _build_strategies(self) -> dict:
+        return {key: self._build_one_strategy(inst) for key, inst in self.config.instruments.items()}
+
+    def retrain_models(self) -> None:
+        """Re-train every model-backed instrument on fresh history. No-op when
+        no instrument uses a live model."""
+        for key, inst in self.config.instruments.items():
+            if getattr(inst, "model", None):
+                self.strategies[key] = self._build_one_strategy(inst)
 
     # -- evaluation ----------------------------------------------------------
 
@@ -246,6 +277,8 @@ class TradingEngine:
         tz = ZoneInfo(self.config.schedule.timezone)
         interval = self.config.schedule.poll_interval_minutes * 60
         sent_on: dict[str, Optional[str]] = {"morning": None, "evening": None}
+        has_models = any(getattr(i, "model", None) for i in self.config.instruments.values())
+        retrained_on: Optional[str] = datetime.now(tz).date().isoformat()  # trained at init
         print(
             f"FableBot running — {len(self.config.instruments)} instruments, "
             f"polling every {self.config.schedule.poll_interval_minutes}m, "
@@ -255,6 +288,12 @@ class TradingEngine:
         )
         while True:
             now = datetime.now(tz)
+            # Re-train live models once a day so they track the market.
+            today = now.date().isoformat()
+            if has_models and retrained_on != today:
+                print(f"[{now:%H:%M}] retraining live models for {today}", flush=True)
+                self.retrain_models()
+                retrained_on = today
             for line in self.run_cycle():
                 print(f"[{now:%H:%M}] {line}", flush=True)
             self._maybe_report(now, "morning", self.config.schedule.morning_report, sent_on)

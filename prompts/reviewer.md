@@ -41,9 +41,20 @@ A **qualified** proposal is worth acting on only when ALL of these also hold:
 - No contradictory evidence in the live journal digest.
 - `scripts/validate.py` passes with the proposed params substituted in.
 
-When you act on one, edit `config.yaml` for that instrument's `params` block
-only. Do not touch other instruments, `param_bounds`, or risk settings. Then
-record the transition:
+When you act on one, edit `config.yaml` for that **one** instrument only — never
+touch other instruments, `param_bounds`, or risk settings. What you edit depends
+on the proposal's source:
+
+- a parameter proposal (`proposals.jsonl`) → that instrument's `params:` block;
+- a genome from `genome_proposals.jsonl` → set that instrument's `genome:` block
+  to the genome (the live engine will trade it; `strategy:` then just labels it);
+- an ML/RL model from `ml_proposals.jsonl` / `rl_proposals.jsonl` → set that
+  instrument's `model:` block to the spec (e.g. `{type: ml_gbt, horizon: 5, ...}`);
+  the live engine trains it on current history at startup and re-trains daily.
+
+A genome or model swap is a *bigger* change than a parameter tweak — hold it to
+correspondingly stronger out-of-sample and held-out evidence. Then record the
+transition:
 
 ```
 python3 scripts/proposals.py --mark <proposal_id> promoted --reason "shipped in PR"

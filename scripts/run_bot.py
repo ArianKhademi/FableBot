@@ -26,11 +26,27 @@ def main() -> None:
     parser.add_argument("--report", choices=["morning", "evening"])
     args = parser.parse_args()
 
+    config = load_config(args.config)
+
+    # Deep-history fetch for training any live ML/RL models (the live per-cycle
+    # feed is too shallow to train on). Cached so daily retrains don't re-hit
+    # the network. Only used by instruments with a `model` block.
+    from fablebot.data import get_source
+    from fablebot.optimizer import OPTIMIZER_FETCH_DAYS
+    cache_dir = config.data.cache_dir
+    if cache_dir and not Path(cache_dir).is_absolute():
+        cache_dir = ROOT / cache_dir
+    source = get_source(config.data.source, cache_dir=cache_dir, ttl_minutes=config.data.cache_ttl_minutes)
+
+    def history_fetch(symbol: str, timeframe: str):
+        return source.fetch(symbol, timeframe, days=OPTIMIZER_FETCH_DAYS.get(timeframe, 60))
+
     engine = TradingEngine(
-        load_config(args.config),
+        config,
         state_path=ROOT / "state/portfolio.json",
         journal_path=ROOT / "state/journal.jsonl",
         shadow_state_path=ROOT / "state/shadow.json",
+        history_fetch=history_fetch,
     )
 
     if args.report == "morning":
