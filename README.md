@@ -296,7 +296,10 @@ Phase 2 adds three optional sections: `data` (which `OHLCVSource` and cache to
 fetch through), `universe` (a large, config-driven scan list for the genome
 search — add tickers without code changes), and `costs` (`friction_bps`, the
 commission + slippage applied during the search). An instrument may also carry a
-`genome` to run a composable-DSL strategy instead of a named one.
+`genome` to run a composable-DSL strategy, or a `model` block
+(`{type: ml_gbt, ...}` / `{type: rl_qlearn, ...}`) that the live engine trains
+on deep history at startup and **re-trains daily** — so genomes, ML and RL all
+trade live, not just numeric params. The risk engine still owns every fill.
 
 ## Project layout
 

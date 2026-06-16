@@ -109,6 +109,52 @@ def test_engine_runs_a_configured_genome_through_the_risk_engine():
     assert pos.units * (pos.entry_price - pos.stop_price) == pytest.approx(1000.0)
 
 
+def test_engine_trains_and_trades_a_live_model():
+    """An instrument with a `model` block trains a live ML model on deep history
+    at init, trades it (through the unchanged risk engine), and retrains on call.
+    """
+    from fablebot.ml import MLStrategy
+
+    cfg = make_config()
+    cfg.instruments["BTC"] = InstrumentConfig(
+        "BTC", "BTC-USD", "Bitcoin", "momentum_breakout", "1h", {},
+        model={"type": "ml_gbt", "n_estimators": 15, "max_depth": 2},
+    )
+    deep = make_ohlcv(
+        np.abs(100 + np.cumsum(np.random.default_rng(0).normal(0.05, 1.0, 800))) + 40, freq="1h"
+    )
+    engine = TradingEngine(
+        cfg, state_path=None,
+        fetch=FakeFeed({"^GSPC": flat(2), "^IXIC": flat(3), "BTC-USD": deep.tail(200)}),
+        notifier=SilentNotifier(),
+        history_fetch=lambda symbol, timeframe: deep,
+    )
+    assert isinstance(engine.strategies["BTC"], MLStrategy)
+    assert isinstance(engine.run_cycle(), list)  # trades the model with no error
+    engine.retrain_models()  # daily retrain rebuilds it
+    assert isinstance(engine.strategies["BTC"], MLStrategy)
+
+
+def test_model_instrument_falls_back_when_untrainable():
+    """Too little data to train -> the bot never goes dark; it falls back to the
+    instrument's named strategy."""
+    from fablebot.strategies.momentum_breakout import MomentumBreakout
+
+    cfg = make_config()
+    cfg.instruments["BTC"] = InstrumentConfig(
+        "BTC", "BTC-USD", "Bitcoin", "momentum_breakout", "1h", MB_PARAMS,
+        model={"type": "ml_gbt"},
+    )
+    tiny = make_ohlcv(np.linspace(100, 110, 50), freq="1h")
+    engine = TradingEngine(
+        cfg, state_path=None,
+        fetch=FakeFeed({"^GSPC": flat(2), "^IXIC": flat(3), "BTC-USD": tiny}),
+        notifier=SilentNotifier(),
+        history_fetch=lambda symbol, timeframe: tiny,
+    )
+    assert isinstance(engine.strategies["BTC"], MomentumBreakout)
+
+
 def test_correlation_filter_blocks_third_risk_on_long():
     breakout = make_ohlcv(list(noisy_flat(40, seed=4)) + [110.0])
     frames = {"^GSPC": dip(1), "^IXIC": dip(2), "BTC-USD": breakout}

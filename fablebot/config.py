@@ -44,6 +44,11 @@ class InstrumentConfig:
     # GenomeStrategy built from this spec instead of the named ``strategy``;
     # ``strategy`` then just labels it. Lets any genome trade any symbol.
     genome: dict | None = None
+    # Optional live ML/RL model spec, e.g. {type: ml_gbt, horizon: 5, ...} or
+    # {type: rl_qlearn, epochs: 20}. When present the live engine trains it on
+    # current deep history (and re-trains on a schedule) and trades it instead
+    # of the named strategy. Takes precedence over ``genome``.
+    model: dict | None = None
 
 
 @dataclass
