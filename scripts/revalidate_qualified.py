@@ -114,11 +114,11 @@ def main() -> None:
     for p in qualified:
         by_inst[p["instrument"]].append(p)
 
-    from fablebot.data import get_source
+    from fablebot.data import source_from_config
     cache_dir = config.data.cache_dir
     if cache_dir and not Path(cache_dir).is_absolute():
         cache_dir = ROOT / cache_dir
-    source = get_source(config.data.source, cache_dir=cache_dir, ttl_minutes=config.data.cache_ttl_minutes)
+    source = source_from_config(config, cache_dir=cache_dir)
 
     overall = collections.Counter()
     per_inst_rows = []

@@ -116,6 +116,16 @@ class StooqSource:
 _BINANCE_INTERVAL = {"15m": "15m", "1h": "1h", "4h": "4h", "1d": "1d"}
 
 
+def _to_binance_symbol(symbol: str) -> str:
+    """Translate a Yahoo-style crypto ticker to a Binance pair so the same
+    config symbol works on either source: BTC-USD -> BTCUSDT, ETH/USD -> ETHUSDT,
+    BTCUSDT -> BTCUSDT."""
+    s = symbol.upper().replace("-", "").replace("/", "")
+    if s.endswith("USD") and not s.endswith("USDT"):
+        s = s[:-3] + "USDT"
+    return s
+
+
 def _parse_binance_klines(rows: list) -> pd.DataFrame:
     cols = ["open_time", "open", "high", "low", "close", "volume", "close_time",
             "qav", "trades", "tbbav", "tbqav", "ignore"]
@@ -137,7 +147,7 @@ class BinanceSource:
 
         if timeframe not in _BINANCE_INTERVAL:
             raise ValueError(f"Unsupported Binance timeframe {timeframe!r}")
-        params = {"symbol": symbol.upper(), "interval": _BINANCE_INTERVAL[timeframe], "limit": 1000}
+        params = {"symbol": _to_binance_symbol(symbol), "interval": _BINANCE_INTERVAL[timeframe], "limit": 1000}
         resp = requests.get("https://api.binance.com/api/v3/klines", params=params, timeout=30)
         resp.raise_for_status()
         df = _parse_binance_klines(resp.json())
@@ -188,6 +198,46 @@ def get_source(
     if cache_dir is not None:
         source = CachedSource(source, cache_dir, ttl_minutes)
     return source
+
+
+class RoutingSource:
+    """Dispatch each symbol to its own backend (e.g. crypto -> Binance,
+    everything else -> yfinance), so the data source is per-instrument."""
+
+    def __init__(self, default: OHLCVSource, routes: dict[str, OHLCVSource]):
+        self.default = default
+        self.routes = routes
+
+    def fetch(self, symbol: str, timeframe: str, days: Optional[int] = None) -> pd.DataFrame:
+        return self.routes.get(symbol, self.default).fetch(symbol, timeframe, days)
+
+
+def source_from_config(config, cache_dir: Optional[Path | str] = None, instruments=None) -> OHLCVSource:
+    """Build the data source for a run, honouring per-instrument ``source``
+    overrides (keyed by symbol). ``cache_dir=None`` yields uncached sources
+    (use for the live per-cycle feed, which must stay fresh); a path caches them
+    (use for deep history / search). Routes cover the traded instruments and the
+    config universe; symbols without an override use ``config.data.source``."""
+    ttl = config.data.cache_ttl_minutes
+    built: dict[str, OHLCVSource] = {}
+
+    def make(name: str) -> OHLCVSource:
+        return built.setdefault(name, get_source(name, cache_dir=cache_dir, ttl_minutes=ttl))
+
+    default = make(config.data.source)
+    if instruments is None:
+        instruments = list(config.instruments.values())
+        try:
+            from .config import universe_instruments
+            instruments += universe_instruments(config)
+        except Exception:
+            pass
+    routes = {
+        inst.symbol: make(inst.source)
+        for inst in instruments
+        if getattr(inst, "source", None) and inst.source != config.data.source
+    }
+    return RoutingSource(default, routes) if routes else default
 
 
 def fetch_ohlcv(symbol: str, timeframe: str, days: int | None = None) -> pd.DataFrame:

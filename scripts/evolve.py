@@ -123,14 +123,14 @@ def main() -> None:
     proposals_path = Path(args.genome_proposals)
 
     from fablebot.config import universe_instruments
-    from fablebot.data import get_source
+    from fablebot.data import source_from_config
     from fablebot.optimizer import OPTIMIZER_FETCH_DAYS
     from fablebot.universe import screen_universe
 
     cache_dir = config.data.cache_dir
     if cache_dir and not Path(cache_dir).is_absolute():
         cache_dir = ROOT / cache_dir
-    source = get_source(config.data.source, cache_dir=cache_dir, ttl_minutes=config.data.cache_ttl_minutes)
+    source = source_from_config(config, cache_dir=cache_dir)
 
     if args.universe:
         targets = universe_instruments(config)

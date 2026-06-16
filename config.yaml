@@ -47,8 +47,8 @@ universe:
     - {symbol: MSFT, name: "Microsoft"}
     - {symbol: NVDA, name: "NVIDIA"}
     - {symbol: AMZN, name: "Amazon"}
-    - {symbol: BTC-USD, name: "Bitcoin"}
-    - {symbol: ETH-USD, name: "Ethereum"}
+    - {symbol: BTC-USD, name: "Bitcoin", source: binance}
+    - {symbol: ETH-USD, name: "Ethereum", source: binance}
 
 instruments:
   SPX:
@@ -88,6 +88,9 @@ instruments:
   BTC:
     symbol: "BTC-USD"
     name: "Bitcoin"
+    # Crypto pulls free, deep intraday history from Binance (BTC-USD -> BTCUSDT);
+    # news/display stay on the Yahoo symbol.
+    source: binance
     strategy: momentum_breakout
     timeframe: "1h"
     params:
