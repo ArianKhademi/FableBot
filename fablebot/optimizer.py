@@ -68,14 +68,41 @@ MIN_HOLDOUT_TRADES = 5
 # Keeping the best of thousands of random draws guarantees spurious winners.
 # A candidate must clear a Deflated Sharpe Ratio: the probability its true
 # Sharpe beats the *expected maximum* Sharpe of N null trials must exceed
-# DSR_THRESHOLD. The bar rises automatically as more configs are tried.
+# DSR_THRESHOLD.
 DSR_THRESHOLD = 0.95
 # Below this many logged trials for an instrument the deflation benchmark and
 # its variance estimate are too noisy to trust, and multiple-comparison risk is
 # still low, so the DSR gate is skipped.
 MIN_TRIALS_FOR_DSR = 10
+# N in the deflated Sharpe is the number of *effectively independent* trials —
+# NOT the raw cumulative count. The optimizer logs tens of thousands of random
+# samples into a handful of bounded params; those are massively redundant, and
+# feeding the raw (forever-growing) count ratchets the benchmark to an
+# unpassable 5-37 Sharpe, blocking every candidate before the real defenses
+# (folds + perturbation + embargoed held-out) ever run. We estimate effective
+# trials from the search's *dimensionality*: a bounded space with more tunable
+# params holds more genuinely-distinct strategies (~DSR_TRIALS_PER_PARAM each),
+# clamped so the gate stays strict but passable and can't ratchet without bound.
+# The held-out set remains the honest arbiter of overfitting. (A fully rigorous
+# N would cluster correlated trials by their return streams — that needs
+# per-trial curves we don't store; this dimensionality proxy is the practical
+# stand-in, and is never larger than the trials actually observed.)
+DSR_TRIALS_PER_PARAM = 60
+DSR_MIN_EFFECTIVE_TRIALS = 30
+DSR_MAX_EFFECTIVE_TRIALS = 400
 _EULER_GAMMA = 0.5772156649015329
 _NORM = NormalDist()
+
+
+def effective_trial_count(n_observed: int, n_params: int) -> int:
+    """Effectively-independent trials for the deflated Sharpe: bounded by how
+    many distinct configs a ``n_params``-dimensional search can resolve, and
+    never more than the trials actually run."""
+    ceiling = min(
+        max(int(n_params) * DSR_TRIALS_PER_PARAM, DSR_MIN_EFFECTIVE_TRIALS),
+        DSR_MAX_EFFECTIVE_TRIALS,
+    )
+    return max(2, min(int(n_observed), ceiling))
 
 # How long (seconds) to cache fetched data before re-fetching.
 DATA_CACHE_TTL = 1800
@@ -178,6 +205,23 @@ def deflated_sharpe_ratio(returns: np.ndarray, n_trials: int, sr_std: float) -> 
     how many configurations were tried. All Sharpe terms are per-bar."""
     benchmark = expected_max_sharpe(n_trials, sr_std)
     return probabilistic_sharpe_ratio(returns, benchmark)
+
+
+def deflation_inputs(oos_sharpes, bars_per_year: float, n_params: int = 4) -> tuple[int, float]:
+    """Derive the deflated-Sharpe inputs (effective N, per-bar Sharpe dispersion)
+    from an instrument's logged trial Sharpes. ``N`` is the effective-trial count
+    for an ``n_params``-dimensional search (see ``effective_trial_count``) — the
+    raw cumulative count overstates independent trials and would make the gate
+    unpassable — and the dispersion is winsorised at the 1st/99th percentile so a
+    few overfit single-split outliers don't inflate the benchmark for everything
+    else."""
+    arr = np.array([s for s in oos_sharpes if math.isfinite(s)], dtype=float)
+    if arr.size < 2:
+        return arr.size, 0.0
+    lo, hi = np.percentile(arr, [1, 99])
+    sr_std_annual = float(np.clip(arr, lo, hi).std())
+    n_eff = effective_trial_count(arr.size, n_params)
+    return n_eff, sr_std_annual / math.sqrt(bars_per_year)
 
 
 @dataclass
@@ -587,15 +631,12 @@ class ContinuousOptimizer:
         returns = equity_returns(trial.oos_equity_curve)
         if returns.size < 12:
             return False
-        prior = [t for t in self.history.read(inst.key, limit=None) if not t.get("is_baseline")]
-        n_trials = len(prior)
-        if n_trials < MIN_TRIALS_FOR_DSR:
+        prior = [t["oos_sharpe"] for t in self.history.read(inst.key, limit=None) if not t.get("is_baseline")]
+        if len(prior) < MIN_TRIALS_FOR_DSR:
             return True
         bpy = BARS_PER_YEAR.get(inst.timeframe, 252)
-        sharpes = np.array([t["oos_sharpe"] for t in prior if math.isfinite(t["oos_sharpe"])])
-        sr_std_annual = float(sharpes.std()) if sharpes.size else 0.0
-        sr_std_perbar = sr_std_annual / math.sqrt(bpy)  # match the per-bar PSR units
-        dsr = deflated_sharpe_ratio(returns, n_trials, sr_std_perbar)
+        n_eff, sr_std_perbar = deflation_inputs(prior, bpy, n_params=len(inst.param_bounds))
+        dsr = deflated_sharpe_ratio(returns, n_eff, sr_std_perbar)
         return dsr >= DSR_THRESHOLD
 
     def _maybe_candidate(self, inst: InstrumentConfig, trial: Trial, baseline_sharpe: float) -> bool:

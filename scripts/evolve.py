@@ -29,7 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from fablebot import search
 from fablebot.config import load_config
-from fablebot.optimizer import BARS_PER_YEAR, split_search_holdout
+from fablebot.optimizer import BARS_PER_YEAR, deflation_inputs, split_search_holdout
 
 ROOT = Path(__file__).resolve().parent.parent
 
@@ -77,9 +77,10 @@ def evolve_instrument(inst, df, args, pool, proposals_path):
     if not leaders:
         return
     best_genome, _ = leaders[0]
-    n_trials = len(oos_sharpes)
     bpy = BARS_PER_YEAR.get(inst.timeframe, 252)
-    sr_std_perbar = float(np.std(oos_sharpes)) / (bpy ** 0.5) if oos_sharpes else 0.0
+    n_trials, sr_std_perbar = deflation_inputs(
+        oos_sharpes, bpy, n_params=len(search.dsl.genome_param_paths(best_genome))
+    )
     verdict = search.validate_genome(
         search_df, holdout_df, inst.symbol, inst.timeframe,
         candidate=best_genome, current=current, rng=rng,

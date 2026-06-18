@@ -288,6 +288,35 @@ def test_expected_max_sharpe_grows_with_trials():
     assert expected_max_sharpe(50, 0.0) == 0.0   # no dispersion -> no benchmark
 
 
+def test_deflation_inputs_bounds_effective_trials():
+    from fablebot.optimizer import BARS_PER_YEAR, DSR_MAX_EFFECTIVE_TRIALS, deflation_inputs
+    sharpes = list(np.random.default_rng(0).normal(0.0, 2.0, 50_000))
+    n_eff, sr_std_perbar = deflation_inputs(sharpes, BARS_PER_YEAR["1h"], n_params=4)
+    assert 2 <= n_eff <= DSR_MAX_EFFECTIVE_TRIALS   # bounded — not 50,000 (that made the gate unpassable)
+    assert n_eff < 50_000
+    assert sr_std_perbar > 0
+
+
+def test_effective_trial_count_scales_with_dimensions_and_is_bounded():
+    from fablebot.optimizer import (
+        DSR_MAX_EFFECTIVE_TRIALS, DSR_MIN_EFFECTIVE_TRIALS, effective_trial_count,
+    )
+    # more tunable params => more genuinely-independent configurations
+    assert effective_trial_count(10**6, 2) < effective_trial_count(10**6, 5)
+    assert effective_trial_count(10**6, 100) == DSR_MAX_EFFECTIVE_TRIALS   # clamped above
+    assert effective_trial_count(10**6, 0) == DSR_MIN_EFFECTIVE_TRIALS     # clamped below
+    assert effective_trial_count(5, 4) == 5                                # never exceeds trials observed
+
+
+def test_deflation_inputs_robust_to_outliers():
+    from fablebot.optimizer import deflation_inputs
+    base = list(np.random.default_rng(1).normal(0.5, 0.3, 300))
+    clean = deflation_inputs(base, 252)[1]
+    with_mirages = deflation_inputs(base + [500.0, -500.0, 800.0], 252)[1]
+    # winsorising keeps a few overfit single-split mirages from inflating the bar
+    assert with_mirages < 2.0 * clean
+
+
 def test_deflation_penalises_more_comparisons():
     """The same edge is less convincing when it was the best of many draws."""
     rng = np.random.default_rng(0)

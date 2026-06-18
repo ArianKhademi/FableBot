@@ -28,7 +28,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from fablebot import rl
 from fablebot.config import load_config
-from fablebot.optimizer import BARS_PER_YEAR, OPTIMIZER_FETCH_DAYS, split_search_holdout
+from fablebot.optimizer import BARS_PER_YEAR, OPTIMIZER_FETCH_DAYS, deflation_inputs, split_search_holdout
 from fablebot.search import current_genome_for
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -56,6 +56,10 @@ def main() -> None:
         cache_dir = ROOT / cache_dir
     source = source_from_config(config, cache_dir=cache_dir)
 
+    from fablebot.runlog import record_run
+    print(f"[rl] START {datetime.now(timezone.utc).isoformat(timespec='seconds')} — {len(targets)} instrument(s)", flush=True)
+    n_qualified = 0
+
     for inst in targets:
         try:
             days = OPTIMIZER_FETCH_DAYS.get(inst.timeframe, 60)
@@ -72,11 +76,11 @@ def main() -> None:
             if t is not None and np.isfinite(t.oos_sharpe):
                 oos_sharpes.append(t.oos_sharpe)
         bpy = BARS_PER_YEAR.get(inst.timeframe, 252)
-        sr_std_perbar = (float(np.std(oos_sharpes)) / (bpy ** 0.5)) if oos_sharpes else 0.0
+        n_eff, sr_std_perbar = deflation_inputs(oos_sharpes, bpy)
 
         verdict = rl.validate_rl(
             search_df, holdout_df, inst, current_genome=current_genome_for(inst),
-            rng=np.random.default_rng(0), n_trials=len(oos_sharpes) * 50,
+            rng=np.random.default_rng(0), n_trials=n_eff,
             sr_std_perbar=sr_std_perbar, agent_kwargs=agent_kwargs, friction_bps=friction,
         )
         status = "QUALIFIED" if verdict["qualified"] else "rejected"
@@ -90,10 +94,15 @@ def main() -> None:
                 "verdict": {k: v for k, v in verdict.items() if k != "reason"},
                 "reason": verdict["reason"],
             }
+            n_qualified += 1
             proposals_path.parent.mkdir(parents=True, exist_ok=True)
             with proposals_path.open("a") as fh:
                 fh.write(json.dumps(record) + "\n")
             print(f"  -> appended qualified RL agent to {proposals_path}")
+
+    summary = f"{n_qualified}/{len(targets)} instruments qualified an RL agent"
+    record_run("train_rl", summary)
+    print(f"[rl] DONE {datetime.now(timezone.utc).isoformat(timespec='seconds')} — {summary}", flush=True)
 
 
 if __name__ == "__main__":

@@ -155,6 +155,42 @@ def test_model_instrument_falls_back_when_untrainable():
     assert isinstance(engine.strategies["BTC"], MomentumBreakout)
 
 
+def test_zero_atr_signal_does_not_crash_or_open():
+    """A degenerate ATR must not raise out of sizing or open an unsized trade."""
+    from fablebot.strategies.base import Action, Signal, Strategy
+
+    class ZeroAtrOpener(Strategy):
+        name = "zatr"
+        def min_bars(self):
+            return 2
+        def evaluate(self, df, position_direction):
+            return Signal(Action.OPEN_LONG, "wants in but atr=0", 0.0)
+
+    engine = engine_with({"^GSPC": flat(1), "^IXIC": flat(2), "BTC-USD": flat(3)})
+    engine.strategies["SPX"] = ZeroAtrOpener({})
+    engine.run_cycle()  # must not raise
+    assert "SPX" not in engine.broker.positions  # no ATR -> no size -> no position
+
+
+def test_one_instrument_error_does_not_crash_the_cycle():
+    """A single instrument blowing up must be logged and skipped, not fatal —
+    the 24/7 loop keeps trading everything else."""
+    from fablebot.strategies.base import Strategy
+
+    class Boom(Strategy):
+        name = "boom"
+        def min_bars(self):
+            return 2
+        def evaluate(self, df, position_direction):
+            raise RuntimeError("kaboom")
+
+    engine = engine_with({"^GSPC": dip(1), "^IXIC": flat(2), "BTC-USD": flat(3)})
+    engine.strategies["NDX"] = Boom({})
+    log = engine.run_cycle()  # must not raise
+    assert any("NDX: evaluation error" in line for line in log)
+    assert "SPX" in engine.broker.positions  # other instruments still processed
+
+
 def test_correlation_filter_blocks_third_risk_on_long():
     breakout = make_ohlcv(list(noisy_flat(40, seed=4)) + [110.0])
     frames = {"^GSPC": dip(1), "^IXIC": dip(2), "BTC-USD": breakout}
