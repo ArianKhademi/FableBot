@@ -288,12 +288,24 @@ def test_expected_max_sharpe_grows_with_trials():
     assert expected_max_sharpe(50, 0.0) == 0.0   # no dispersion -> no benchmark
 
 
-def test_deflation_inputs_caps_effective_trials():
-    from fablebot.optimizer import DSR_EFFECTIVE_TRIALS_CAP, BARS_PER_YEAR, deflation_inputs
+def test_deflation_inputs_bounds_effective_trials():
+    from fablebot.optimizer import BARS_PER_YEAR, DSR_MAX_EFFECTIVE_TRIALS, deflation_inputs
     sharpes = list(np.random.default_rng(0).normal(0.0, 2.0, 50_000))
-    n_eff, sr_std_perbar = deflation_inputs(sharpes, BARS_PER_YEAR["1h"])
-    assert n_eff == DSR_EFFECTIVE_TRIALS_CAP   # capped, not 50,000 (that made the gate unpassable)
+    n_eff, sr_std_perbar = deflation_inputs(sharpes, BARS_PER_YEAR["1h"], n_params=4)
+    assert 2 <= n_eff <= DSR_MAX_EFFECTIVE_TRIALS   # bounded — not 50,000 (that made the gate unpassable)
+    assert n_eff < 50_000
     assert sr_std_perbar > 0
+
+
+def test_effective_trial_count_scales_with_dimensions_and_is_bounded():
+    from fablebot.optimizer import (
+        DSR_MAX_EFFECTIVE_TRIALS, DSR_MIN_EFFECTIVE_TRIALS, effective_trial_count,
+    )
+    # more tunable params => more genuinely-independent configurations
+    assert effective_trial_count(10**6, 2) < effective_trial_count(10**6, 5)
+    assert effective_trial_count(10**6, 100) == DSR_MAX_EFFECTIVE_TRIALS   # clamped above
+    assert effective_trial_count(10**6, 0) == DSR_MIN_EFFECTIVE_TRIALS     # clamped below
+    assert effective_trial_count(5, 4) == 5                                # never exceeds trials observed
 
 
 def test_deflation_inputs_robust_to_outliers():

@@ -78,6 +78,21 @@ def main() -> None:
     prev_best: dict[str, float] = {}  # instrument -> best genome fitness last cycle
     genome_proposals = Path(args.genome_proposals)
 
+    # The per-process cycle counter restarts at 1, but all real work is on disk
+    # and resumes: trials append to backtest_history, and each genome population
+    # reloads at its saved generation. Show that so a restart isn't mistaken for
+    # lost progress.
+    resumed = []
+    for inst in instruments:
+        pop_path = ROOT / "state" / f"population_{inst.key}.json"
+        if pop_path.exists():
+            try:
+                resumed.append(f"{inst.key}@gen{json.loads(pop_path.read_text()).get('generation', 0)}")
+            except Exception:
+                pass
+    print(f"[engine] {len(history.read(limit=None))} trials on disk; "
+          f"resuming genome populations: {', '.join(resumed) or 'fresh'}", flush=True)
+
     pool = ProcessPoolExecutor(max_workers=args.workers) if args.workers > 1 else None
     cycle = 0
     try:
@@ -151,7 +166,10 @@ def _gate_best_genome(ga, inst, search_df, holdout_df, friction, rng, proposals_
     best_genome, _ = ga.best(1)[0]
     current = search.current_genome_for(inst)
     fitnesses = [f for _, f in ga.history]
-    n_eff, sr_std_perbar = deflation_inputs(fitnesses, BARS_PER_YEAR.get(inst.timeframe, 252))
+    n_eff, sr_std_perbar = deflation_inputs(
+        fitnesses, BARS_PER_YEAR.get(inst.timeframe, 252),
+        n_params=len(search.dsl.genome_param_paths(best_genome)),
+    )
     verdict = search.validate_genome(
         search_df, holdout_df, inst.symbol, inst.timeframe,
         candidate=best_genome, current=current, rng=rng,

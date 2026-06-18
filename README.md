@@ -234,6 +234,34 @@ can be proposed. Full brief: [`docs/phase-2-learning-engine.md`](docs/phase-2-le
   open positions are sticky (never force-closed to rotate), concurrency is
   capped, and hysteresis resists churn. It recommends; the reviewer applies.
 
+## Setup (from a fresh clone)
+
+```bash
+python3 -m pip install -r requirements.txt   # Python 3.9+
+python3 -m pytest                            # sanity check — all green, no network needed
+```
+
+**API keys / `.env`:** none required to run or search. All data sources are
+keyless — yfinance and Stooq (equities/ETFs, daily + intraday) and Binance's
+public endpoint (crypto). The only optional setting is an env var for report
+delivery:
+
+```bash
+export FABLEBOT_WEBHOOK_URL="https://hooks.slack.com/..."   # optional; omit to print/file only
+```
+
+**Only for the nightly reviewer** (`scripts/nightly_review.sh`) you also need
+two CLIs on `PATH`, both authenticated: `claude` (Claude Code) and `gh` (GitHub,
+`gh auth login`). Nothing else uses them.
+
+**Restarting is safe — you cannot lose search progress.** All state lives under
+`state/` and resumes automatically: `portfolio.json` (live positions),
+`backtest_history.jsonl` (every trial), and `population_*.json` (each genome
+population, reloaded at its saved generation). Kill and restart `run_bot` /
+`run_engine` freely. The `cycle N` counter `run_engine` prints is per-process
+and restarts at 1 — that is **cosmetic**; the startup line reports the real
+resumed state (`N trials on disk; resuming genome populations: BTC@gen1954, …`).
+
 ## Running the full system
 
 There are three evidence pipelines, and they land in **different files** — which

@@ -147,7 +147,7 @@ class TradingEngine:
             log.append(f"{key}: closed {trade.direction} {trade.pnl:+,.2f} ({signal.reason})")
             journal("close", signal.reason)
             self.journal.record_trade(trade)
-        elif signal.opens and position is None:
+        elif signal.opens and position is None and signal.atr > 0:
             direction = signal.direction
             allowed, why = self.correlation.allows(
                 key, direction, self.broker.open_directions()
@@ -250,7 +250,11 @@ class TradingEngine:
             except Exception as exc:
                 log.append(f"{key}: data fetch failed ({exc})")
                 continue
-            log.extend(self.evaluate_instrument(inst, df))
+            try:
+                log.extend(self.evaluate_instrument(inst, df))
+            except Exception as exc:
+                # One instrument's failure must never take down the live loop.
+                log.append(f"{key}: evaluation error ({type(exc).__name__}: {exc}) — skipped")
         return log
 
     # -- reports -------------------------------------------------------------

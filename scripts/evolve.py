@@ -78,7 +78,9 @@ def evolve_instrument(inst, df, args, pool, proposals_path):
         return
     best_genome, _ = leaders[0]
     bpy = BARS_PER_YEAR.get(inst.timeframe, 252)
-    n_trials, sr_std_perbar = deflation_inputs(oos_sharpes, bpy)
+    n_trials, sr_std_perbar = deflation_inputs(
+        oos_sharpes, bpy, n_params=len(search.dsl.genome_param_paths(best_genome))
+    )
     verdict = search.validate_genome(
         search_df, holdout_df, inst.symbol, inst.timeframe,
         candidate=best_genome, current=current, rng=rng,
