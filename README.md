@@ -224,7 +224,10 @@ can be proposed. Full brief: [`docs/phase-2-learning-engine.md`](docs/phase-2-le
   slippage applied to every fill during the search, so the gate can't certify a
   frictionless-only edge.
 - **Unified engine** (`scripts/run_engine.py`) — one orchestrator that advances
-  the numeric optimizer and the evolutionary genome search together.
+  the numeric optimizer and the evolutionary genome search together, prints a
+  per-cycle heartbeat, and periodically puts the best evolved genomes through
+  the full gate into `genome_proposals.jsonl`. `scripts/engine_status.py` shows,
+  read-only, whether the search is learning and what has cleared the gate.
 - **Dynamic universe rotation** (`scripts/rotate_universe.py`) — a daily scan
   scores the whole universe by the best gated edge per symbol and proposes which
   instruments the live book should trade, instead of a fixed five. Guardrailed:
@@ -233,20 +236,44 @@ can be proposed. Full brief: [`docs/phase-2-learning-engine.md`](docs/phase-2-le
 
 ## Running the full system
 
-Three processes, typically two tmux panes plus a cron entry:
+There are three evidence pipelines, and they land in **different files** — which
+is why `scripts/proposals.py` (numeric only) can read zero while the genome
+search is busy:
 
+| Pipeline | Produced by | Gated by | Lands in |
+|---|---|---|---|
+| Numeric params | `run_engine` / `optimize_loop` | automatic | `state/proposals.jsonl` |
+| Evolved genomes | `run_engine` (every `--validate-every` cycles) or `evolve.py` | automatic | `state/genome_proposals.jsonl` |
+| ML / RL models | `train_ml.py` / `train_rl.py` | automatic | `state/ml_proposals.jsonl` / `rl_proposals.jsonl` |
+| Universe rotation | `rotate_universe.py` | guardrails | `state/rotation_proposals.jsonl` |
+
+**Leave running (daemons, e.g. in tmux or as launchd agents):**
 ```bash
-# Pane 1 — the live paper-trading loop
-python3 scripts/run_bot.py
-
-# Pane 2 — the continuous optimizer (runs forever alongside the bot)
-python3 scripts/optimize_loop.py                 # all cores, throttled
-#   or the unified engine: numeric optimizer + evolutionary genome search
-python3 scripts/run_engine.py --cycles 0 --workers 8
-
-# Cron — the nightly review, after the 21:00 recap
-30 21 * * * /path/to/FableBot/scripts/nightly_review.sh >> /path/to/FableBot/logs/review.log 2>&1
+python3 scripts/run_bot.py                       # live paper trader; retrains live models daily
+python3 scripts/run_engine.py --cycles 0 --workers 8   # numeric + genome search, gates & surfaces both
 ```
+`run_engine` supersedes `optimize_loop` (it does the numeric search **and** the
+genome search, and now validates the best genomes through the gate). Run **one**
+of them, not both — they share state files. It prints a per-cycle heartbeat so
+you can see it working.
+
+**Cron (periodic):**
+```cron
+45 20 * * * cd /path/to/FableBot && python3 scripts/rotate_universe.py --screen-top 12 >> logs/rotation.log 2>&1
+30 21 * * * /path/to/FableBot/scripts/nightly_review.sh >> /path/to/FableBot/logs/review.log 2>&1
+0 3 * * 0  cd /path/to/FableBot && { python3 scripts/train_ml.py; python3 scripts/train_rl.py; } >> logs/train.log 2>&1
+```
+
+**Check on it anytime (read-only):**
+```bash
+python3 scripts/engine_status.py     # is it learning? what's cleared the gate?
+python3 scripts/proposals.py         # the numeric pipeline + shipping slate
+```
+
+Nothing above edits `config.yaml` or the live book — every pipeline only
+produces gated *evidence*. The **nightly reviewer** turns that evidence into
+human-gated draft PRs (≤1 change per instrument); you review and merge, and the
+bot adopts it on restart.
 
 The bot is **paper-trading only**: it fetches real market data and simulates
 fills, keeping state in `state/portfolio.json`. Wiring it to a real broker means

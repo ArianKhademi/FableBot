@@ -127,6 +127,11 @@ class GeneticSearch:
     :meth:`evolve` breeds the next one. Elitism keeps the best survivors intact;
     the rest come from tournament selection + crossover + mutation."""
 
+    # Cap retained evaluation history so the persisted population file can't grow
+    # without bound on a long-running engine (it was reaching 17 MB). We keep the
+    # best genomes (so best() and re-proposal still see them) plus the most recent.
+    MAX_HISTORY = 1500
+
     def __init__(
         self,
         rng: np.random.Generator,
@@ -165,6 +170,19 @@ class GeneticSearch:
     def tell(self, genome: dict, fitness: float) -> None:
         self.scores[dsl.genome_id(genome)] = float(fitness)
         self.history.append((copy.deepcopy(genome), float(fitness)))
+        if len(self.history) > 2 * self.MAX_HISTORY:
+            self._trim_history()
+
+    def _trim_history(self) -> None:
+        """Keep the best half + the most recent half (deduped by genome id),
+        bounding the persisted history without losing the strongest genomes."""
+        keep = self.MAX_HISTORY // 2
+        recent = self.history[-keep:]
+        best = sorted(self.history[:-keep], key=lambda gf: gf[1], reverse=True)[:keep]
+        merged: dict[str, tuple[dict, float]] = {}
+        for g, f in best + recent:  # recent last so its fitness wins ties
+            merged[dsl.genome_id(g)] = (g, f)
+        self.history = list(merged.values())
 
     def generation_complete(self) -> bool:
         return self.ask() is None

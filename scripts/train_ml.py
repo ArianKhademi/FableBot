@@ -27,7 +27,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from fablebot import ml
 from fablebot.config import load_config
-from fablebot.optimizer import BARS_PER_YEAR, OPTIMIZER_FETCH_DAYS, split_search_holdout
+from fablebot.optimizer import BARS_PER_YEAR, OPTIMIZER_FETCH_DAYS, deflation_inputs, split_search_holdout
 from fablebot.search import current_genome_for
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -74,11 +74,11 @@ def main() -> None:
             if t is not None and np.isfinite(t.oos_sharpe):
                 oos_sharpes.append(t.oos_sharpe)
         bpy = BARS_PER_YEAR.get(inst.timeframe, 252)
-        sr_std_perbar = (float(np.std(oos_sharpes)) / (bpy ** 0.5)) if oos_sharpes else 0.0
+        n_eff, sr_std_perbar = deflation_inputs(oos_sharpes, bpy)
 
         verdict = ml.validate_ml(
             search_df, holdout_df, inst, current_genome=current_genome_for(inst),
-            rng=np.random.default_rng(0), n_trials=len(oos_sharpes) * 50,
+            rng=np.random.default_rng(0), n_trials=n_eff,
             sr_std_perbar=sr_std_perbar, model_kwargs={**model_kwargs, "horizon": args.horizon},
             friction_bps=friction,
         )

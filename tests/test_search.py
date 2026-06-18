@@ -92,6 +92,19 @@ def test_persistence_resumes_population_and_scores(tmp_path):
     assert len(resumed.history) == len(s.history)
 
 
+def test_history_trims_but_keeps_best():
+    """Long runs must not grow the persisted history without bound, and must
+    never lose the best genome found."""
+    rng = np.random.default_rng(1)
+    s = search.GeneticSearch(rng, population_size=8, seeds=dsl.seed_genomes())
+    s.MAX_HISTORY = 20
+    s.tell(dsl.sample_genome(rng), 1000.0)  # a standout best, early
+    for _ in range(200):
+        s.tell(dsl.sample_genome(rng), float(rng.uniform(-1, 1)))
+    assert len(s.history) <= 2 * s.MAX_HISTORY
+    assert max(f for _, f in s.history) == 1000.0  # best survived trimming
+
+
 def test_resume_or_new(tmp_path):
     rng = np.random.default_rng(0)
     path = tmp_path / "pop.json"

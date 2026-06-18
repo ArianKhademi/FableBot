@@ -68,12 +68,21 @@ MIN_HOLDOUT_TRADES = 5
 # Keeping the best of thousands of random draws guarantees spurious winners.
 # A candidate must clear a Deflated Sharpe Ratio: the probability its true
 # Sharpe beats the *expected maximum* Sharpe of N null trials must exceed
-# DSR_THRESHOLD. The bar rises automatically as more configs are tried.
+# DSR_THRESHOLD.
 DSR_THRESHOLD = 0.95
 # Below this many logged trials for an instrument the deflation benchmark and
 # its variance estimate are too noisy to trust, and multiple-comparison risk is
 # still low, so the DSR gate is skipped.
 MIN_TRIALS_FOR_DSR = 10
+# N in the deflated Sharpe is the number of *effectively independent* trials —
+# NOT the raw cumulative count. The optimizer logs tens of thousands of random
+# samples into a handful of bounded params; those are massively redundant, and
+# feeding the raw (forever-growing) count ratchets the benchmark to an
+# unpassable 5-37 Sharpe, blocking every candidate before the real defenses
+# (folds + perturbation + embargoed held-out) ever run. Cap N at a conservative
+# estimate of distinct configurations so the gate stays strict but passable;
+# the held-out set remains the honest arbiter of overfitting.
+DSR_EFFECTIVE_TRIALS_CAP = 200
 _EULER_GAMMA = 0.5772156649015329
 _NORM = NormalDist()
 
@@ -178,6 +187,22 @@ def deflated_sharpe_ratio(returns: np.ndarray, n_trials: int, sr_std: float) -> 
     how many configurations were tried. All Sharpe terms are per-bar."""
     benchmark = expected_max_sharpe(n_trials, sr_std)
     return probabilistic_sharpe_ratio(returns, benchmark)
+
+
+def deflation_inputs(oos_sharpes, bars_per_year: float) -> tuple[int, float]:
+    """Derive the deflated-Sharpe inputs (effective N, per-bar Sharpe dispersion)
+    from an instrument's logged trial Sharpes. ``N`` is capped at
+    DSR_EFFECTIVE_TRIALS_CAP — the raw cumulative count overstates independent
+    trials and would make the gate unpassable — and the dispersion is winsorised
+    at the 1st/99th percentile so a few overfit single-split outliers don't
+    inflate the benchmark for everything else."""
+    arr = np.array([s for s in oos_sharpes if math.isfinite(s)], dtype=float)
+    if arr.size < 2:
+        return arr.size, 0.0
+    lo, hi = np.percentile(arr, [1, 99])
+    sr_std_annual = float(np.clip(arr, lo, hi).std())
+    n_eff = min(arr.size, DSR_EFFECTIVE_TRIALS_CAP)
+    return n_eff, sr_std_annual / math.sqrt(bars_per_year)
 
 
 @dataclass
@@ -587,15 +612,12 @@ class ContinuousOptimizer:
         returns = equity_returns(trial.oos_equity_curve)
         if returns.size < 12:
             return False
-        prior = [t for t in self.history.read(inst.key, limit=None) if not t.get("is_baseline")]
-        n_trials = len(prior)
-        if n_trials < MIN_TRIALS_FOR_DSR:
+        prior = [t["oos_sharpe"] for t in self.history.read(inst.key, limit=None) if not t.get("is_baseline")]
+        if len(prior) < MIN_TRIALS_FOR_DSR:
             return True
         bpy = BARS_PER_YEAR.get(inst.timeframe, 252)
-        sharpes = np.array([t["oos_sharpe"] for t in prior if math.isfinite(t["oos_sharpe"])])
-        sr_std_annual = float(sharpes.std()) if sharpes.size else 0.0
-        sr_std_perbar = sr_std_annual / math.sqrt(bpy)  # match the per-bar PSR units
-        dsr = deflated_sharpe_ratio(returns, n_trials, sr_std_perbar)
+        n_eff, sr_std_perbar = deflation_inputs(prior, bpy)
+        dsr = deflated_sharpe_ratio(returns, n_eff, sr_std_perbar)
         return dsr >= DSR_THRESHOLD
 
     def _maybe_candidate(self, inst: InstrumentConfig, trial: Trial, baseline_sharpe: float) -> bool:

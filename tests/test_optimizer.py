@@ -288,6 +288,23 @@ def test_expected_max_sharpe_grows_with_trials():
     assert expected_max_sharpe(50, 0.0) == 0.0   # no dispersion -> no benchmark
 
 
+def test_deflation_inputs_caps_effective_trials():
+    from fablebot.optimizer import DSR_EFFECTIVE_TRIALS_CAP, BARS_PER_YEAR, deflation_inputs
+    sharpes = list(np.random.default_rng(0).normal(0.0, 2.0, 50_000))
+    n_eff, sr_std_perbar = deflation_inputs(sharpes, BARS_PER_YEAR["1h"])
+    assert n_eff == DSR_EFFECTIVE_TRIALS_CAP   # capped, not 50,000 (that made the gate unpassable)
+    assert sr_std_perbar > 0
+
+
+def test_deflation_inputs_robust_to_outliers():
+    from fablebot.optimizer import deflation_inputs
+    base = list(np.random.default_rng(1).normal(0.5, 0.3, 300))
+    clean = deflation_inputs(base, 252)[1]
+    with_mirages = deflation_inputs(base + [500.0, -500.0, 800.0], 252)[1]
+    # winsorising keeps a few overfit single-split mirages from inflating the bar
+    assert with_mirages < 2.0 * clean
+
+
 def test_deflation_penalises_more_comparisons():
     """The same edge is less convincing when it was the best of many draws."""
     rng = np.random.default_rng(0)
