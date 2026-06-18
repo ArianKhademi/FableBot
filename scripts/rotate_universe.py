@@ -121,6 +121,9 @@ def main() -> None:
     proposals_path.parent.mkdir(parents=True, exist_ok=True)
     with proposals_path.open("a") as fh:
         fh.write(json.dumps(record) + "\n")
+
+    from fablebot.runlog import record_run
+    record_run("rotate_universe", f"add={plan['add'] or 'none'} drop={plan['drop'] or 'none'}")
     if args.write:
         out = Path(args.write)
         out.parent.mkdir(parents=True, exist_ok=True)

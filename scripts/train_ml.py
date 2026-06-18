@@ -57,6 +57,10 @@ def main() -> None:
         cache_dir = ROOT / cache_dir
     source = source_from_config(config, cache_dir=cache_dir)
 
+    from fablebot.runlog import record_run
+    print(f"[ml] START {datetime.now(timezone.utc).isoformat(timespec='seconds')} — {len(targets)} instrument(s)", flush=True)
+    n_qualified = 0
+
     for inst in targets:
         try:
             days = OPTIMIZER_FETCH_DAYS.get(inst.timeframe, 60)
@@ -93,10 +97,15 @@ def main() -> None:
                 "verdict": {k: v for k, v in verdict.items() if k != "reason"},
                 "reason": verdict["reason"],
             }
+            n_qualified += 1
             proposals_path.parent.mkdir(parents=True, exist_ok=True)
             with proposals_path.open("a") as fh:
                 fh.write(json.dumps(record) + "\n")
             print(f"  -> appended qualified ML model to {proposals_path}")
+
+    summary = f"{n_qualified}/{len(targets)} instruments qualified an ML model"
+    record_run("train_ml", summary)
+    print(f"[ml] DONE {datetime.now(timezone.utc).isoformat(timespec='seconds')} — {summary}", flush=True)
 
 
 if __name__ == "__main__":

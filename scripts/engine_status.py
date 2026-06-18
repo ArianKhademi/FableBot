@@ -112,10 +112,13 @@ def main() -> None:
         insts = sorted({r.get("instrument") for r in recs})
         print(f"  {label:15}: {len(recs)} qualified" + (f" — {insts}" if insts else ""))
 
-    rot = _load_jsonl(STATE / "rotation_proposals.jsonl")
-    if rot:
-        last = rot[-1]
-        print(f"\nLAST ROTATION SCAN ({last.get('ts','?')}): add={last.get('add')} drop={last.get('drop')}")
+    # ── scheduled-job heartbeat (did the crons actually fire?) ───────────────
+    print("\nLAST SCHEDULED RUNS  (proof the cron jobs fired, even when they found nothing)")
+    runs = _load_jsonl(STATE / "run_log.jsonl")[-8:]
+    if not runs:
+        print("  none recorded yet — train_ml/train_rl/rotate_universe append here when run")
+    for r in runs:
+        print(f"  {r.get('ts','?')}  {r.get('job','?'):16} {r.get('summary','')}")
 
     print("\nReminder: nothing here is live until you (or the nightly reviewer) edit config.yaml.")
 
