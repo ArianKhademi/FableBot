@@ -128,6 +128,26 @@ def main() -> None:
     for r in runs:
         print(f"  {r.get('ts','?')}  {r.get('job','?'):16} {r.get('summary','')}")
 
+    # ── live positions (some queued config changes wait on these) ────────────
+    print("\nLIVE POSITIONS  (open paper trades — a queued change can be gated on one going flat)")
+    pf = STATE / "portfolio.json"
+    positions = {}
+    if pf.exists():
+        try:
+            positions = json.loads(pf.read_text()).get("positions", {}) or {}
+        except Exception:
+            positions = {}
+    if positions:
+        for k in sorted(positions):
+            p = positions[k]
+            print(f"  {k:5} {p.get('direction','?'):5} {p.get('strategy','?'):16} "
+                  f"since {str(p.get('opened_at',''))[:10]}")
+    else:
+        print("  flat — no open positions")
+    if "NDX" in positions:
+        print("  ⏳ NDX is held on 15m — the queued NDX→daily switch (promote_when_flat.sh) "
+              "waits until it's flat")
+
     print("\nReminder: nothing here is live until you (or the nightly reviewer) edit config.yaml.")
 
 
