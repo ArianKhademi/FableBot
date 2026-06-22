@@ -195,6 +195,16 @@ def test_overfitting_gap_flags_is_oos_divergence():
     assert mod.overfitting_gap([]) != mod.overfitting_gap([])  # NaN when empty
 
 
+def test_overfitting_gap_ignores_non_finite():
+    mod = _proposals_cli()
+    trials = [
+        {"is_sharpe": 3.0, "oos_sharpe": 1.0},                       # gap 2.0
+        {"is_sharpe": float("inf"), "oos_sharpe": float("-inf")},    # degenerate → ignored
+        {"is_sharpe": float("nan"), "oos_sharpe": 0.0},              # NaN → ignored
+    ]
+    assert mod.overfitting_gap(trials) == 2.0  # only the finite row counts
+
+
 def test_shipping_slate_picks_one_best_per_instrument():
     mod = _proposals_cli()
 

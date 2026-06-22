@@ -251,8 +251,32 @@ export FABLEBOT_WEBHOOK_URL="https://hooks.slack.com/..."   # optional; omit to 
 ```
 
 **Only for the nightly reviewer** (`scripts/nightly_review.sh`) you also need
-two CLIs on `PATH`, both authenticated: `claude` (Claude Code) and `gh` (GitHub,
-`gh auth login`). Nothing else uses them.
+two CLIs on `PATH`: `claude` (Claude Code) and `gh` (GitHub). Both must
+authenticate **non-interactively**, because `cron` runs without your login
+keychain — a plain `gh auth login` is invisible to cron (this is exactly why the
+reviewer silently failed every night with "gh is not authenticated"). Set it up
+once with a token file the script sources:
+
+```bash
+mkdir -p ~/.config/fablebot
+cat > ~/.config/fablebot/secrets.env <<'EOF'
+export GH_TOKEN=github_pat_xxx   # fine-grained PAT: Contents + Pull requests, R/W, on this repo only
+EOF
+chmod 600 ~/.config/fablebot/secrets.env
+```
+
+The script loads that file, exports `GH_TOKEN`, and runs `gh auth setup-git` so
+`git push` works over HTTPS without a keychain. (`claude` similarly needs to be
+usable headlessly under cron.) Verify it works as cron will see it — a *clean*
+environment:
+
+```bash
+env -i HOME="$HOME" PATH=/usr/bin:/bin scripts/nightly_review.sh
+```
+
+Expected **today**: `Review complete: no change warranted` and **no PR** — that's
+correct, because nothing has cleared the gate yet. A green run that opens no PR
+is success, not a failure.
 
 **Restarting is safe — you cannot lose search progress.** All state lives under
 `state/` and resumes automatically: `portfolio.json` (live positions),

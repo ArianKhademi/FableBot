@@ -3,5 +3,9 @@ __pycache__/
 .pytest_cache/
 state/
 reports/
+logs/
 .venv/
 venv/
+# secrets (PAT for the nightly reviewer); keep tokens out of git entirely
+.env
+secrets.env

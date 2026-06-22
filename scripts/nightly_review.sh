@@ -15,6 +15,18 @@ cd "$(dirname "$0")/.."
 # are on PATH so claude/gh/python3 resolve the same way they do in a shell.
 export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$PATH"
 
+# Cron has no login keychain, so gh's stored token is invisible (this is why the
+# job failed every night with "gh is not authenticated"). Load a Personal Access
+# Token from a gitignored file outside the repo; gh honours GH_TOKEN ahead of the
+# keyring, and `gh auth setup-git` then serves it to git over HTTPS — no keychain.
+SECRETS="${FABLEBOT_SECRETS:-$HOME/.config/fablebot/secrets.env}"
+if [ -f "$SECRETS" ]; then
+    set -a; . "$SECRETS"; set +a
+fi
+export GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+export GITHUB_TOKEN="${GITHUB_TOKEN:-$GH_TOKEN}"
+gh auth setup-git 2>/dev/null || true
+
 DATE="$(date +%Y-%m-%d)"
 BRANCH="bot-review/${DATE}"
 
@@ -27,8 +39,12 @@ command -v python3 >/dev/null 2>&1 || fail "python3 not found on PATH"
 command -v git     >/dev/null 2>&1 || fail "git not found on PATH"
 command -v claude  >/dev/null 2>&1 || fail "claude CLI not found on PATH — is Claude Code installed for this user?"
 command -v gh      >/dev/null 2>&1 || fail "gh CLI not found on PATH — brew install gh"
-gh auth status >/dev/null 2>&1 || fail "gh is not authenticated — run: gh auth login"
-git diff --quiet || fail "working tree has uncommitted changes — commit or stash them so the review can branch safely"
+gh auth status >/dev/null 2>&1 || gh api user >/dev/null 2>&1 \
+    || fail "gh cannot authenticate — set GH_TOKEN in $SECRETS (a GitHub PAT). See scripts/README or the repo docs."
+# Only source changes should block the review; generated artefacts (logs the cron
+# appends to, analysis/ digests the review itself regenerates) must not.
+git diff --quiet -- ':!logs' ':!analysis' \
+    || fail "working tree has uncommitted source changes — commit or stash them so the review can branch safely"
 
 # 1. Digest the journal and summarise the optimizer's findings so the reviewer
 #    has a single consolidated view rather than raw JSONL to parse.

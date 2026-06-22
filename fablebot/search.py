@@ -109,13 +109,24 @@ def tpe_refine_genome(
 # ── fitness ──────────────────────────────────────────────────────────────────
 
 
-def genome_fitness(oos_sharpe: float, oos_trades: int, min_trades: int = 20) -> float:
+def genome_fitness(oos_sharpe: float, oos_trades: int, is_sharpe: float = None,
+                   min_trades: int = 20, gap_lambda: float = 0.5) -> float:
     """Walk-forward fitness: OOS Sharpe, penalised when the trade count is too
-    thin to trust (keeps the GA from chasing 3-trade flukes)."""
+    thin to trust (keeps the GA from chasing 3-trade flukes) AND when the
+    in-sample Sharpe towers over the OOS Sharpe (the signature of overfitting).
+
+    The gap penalty makes the GA's objective match the gate's: a genome with
+    IS 80 / OOS 67 (a knife-edge single-split fit the held-out gate will reject)
+    now scores far below one with IS 9 / OOS 8. ``is_sharpe`` is already computed
+    by every trial, so this costs nothing extra; left None it reduces to the old
+    OOS-only fitness for backward compatibility."""
     if not math.isfinite(oos_sharpe):
         return -1e9
     penalty = 0.25 * max(0, min_trades - max(oos_trades, 0))
-    return oos_sharpe - penalty
+    gap = 0.0
+    if is_sharpe is not None and math.isfinite(is_sharpe):
+        gap = gap_lambda * max(0.0, is_sharpe - oos_sharpe)  # only punish IS >> OOS
+    return oos_sharpe - penalty - gap
 
 
 # ── genetic search over genomes ──────────────────────────────────────────────
@@ -209,9 +220,33 @@ class GeneticSearch:
                 child = dsl.mutate_genome(child, self.rng)
             next_pop.append(child)
 
+        self._inject_immigrants(next_pop, n_elite)
         self.population = next_pop
         self._queue = [g for g in next_pop if dsl.genome_id(g) not in self.scores]
         self.generation += 1
+
+    def _inject_immigrants(self, next_pop: list, n_elite: int) -> None:
+        """Once the population converges, crossover/mutation keep regenerating
+        already-scored genomes, so a generation evaluates almost nothing and the
+        best freezes (the 'spinning' you see at <1 eval/gen). Replace redundant
+        (already-scored) NON-elite slots with fresh random genomes so the search
+        keeps exploring instead of idling. Elites are never touched, so the best
+        can't regress; bounded attempts so a fully-saturated scores set can't
+        loop forever."""
+        target_new = max(1, self.population_size // 4)
+        def n_new() -> int:
+            return sum(1 for g in next_pop if dsl.genome_id(g) not in self.scores)
+        attempts = 0
+        while attempts < 50 and n_new() < target_new:
+            redundant = next(
+                (j for j in range(n_elite, len(next_pop))
+                 if dsl.genome_id(next_pop[j]) in self.scores),
+                None,
+            )
+            if redundant is None:
+                break  # no redundant non-elite slot left to recycle
+            next_pop[redundant] = dsl.sample_genome(self.rng)
+            attempts += 1
 
     # -- inspection -----------------------------------------------------------
 
@@ -294,13 +329,14 @@ def evaluate_genome(df, symbol: str, timeframe: str, genome: dict, risk_per_trad
 
 
 def _eval_worker(args):
-    """Picklable: evaluate one genome and return (oos_sharpe, oos_trades) so a
-    generation can be scored across worker processes."""
+    """Picklable: evaluate one genome and return (is_sharpe, oos_sharpe,
+    oos_trades) so a generation can be scored — with the IS/OOS gap — across
+    worker processes."""
     df, symbol, timeframe, genome, risk, friction = args
     trial = evaluate_genome(df, symbol, timeframe, genome, risk, friction)
     if trial is None:
-        return (float("-inf"), 0)
-    return (trial.oos_sharpe, trial.oos_trades)
+        return (float("-inf"), float("-inf"), 0)
+    return (trial.is_sharpe, trial.oos_sharpe, trial.oos_trades)
 
 
 def current_genome_for(inst) -> dict:
