@@ -17,6 +17,7 @@ No network, no writes.
 
 import json
 import sys
+import time
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -26,6 +27,28 @@ from fablebot.dsl import genome_id
 
 ROOT = Path(__file__).resolve().parent.parent
 STATE = ROOT / "state"
+
+# A population file untouched for longer than this isn't being evolved by the
+# current run (run_engine rewrites every active population each cycle, seconds
+# apart). Common cause: running `--universe`, which only evolves the scan list,
+# so the traded populations sit idle — or run_engine is stopped entirely.
+PARKED_MIN = 45.0
+
+
+def classify_population(sat: float, age_min: float) -> str:
+    """Describe a genome population from its saturation and how long since its
+    file changed. The key distinction: a *parked* population (not updated by the
+    current run) is not the same as one that's *spinning* (actively evolving but
+    stuck re-scoring seen genomes). Telling someone running --universe to 'restart
+    for the immigrant fix' because a parked traded pop looks saturated is wrong —
+    the current run isn't touching it, and the fix is already in."""
+    if age_min > PARKED_MIN:
+        return f"parked {age_min / 60:.1f}h — not updated by the current run (e.g. running --universe)"
+    if sat >= 0.9:
+        return "⚠ spinning — still saturated with the immigrant fix active"
+    if sat >= 0.5:
+        return "nearing convergence"
+    return "exploring"
 
 
 def _load_jsonl(path: Path):
@@ -78,12 +101,8 @@ def main() -> None:
         scored = set(d.get("scores", {}).keys())
         pop = d.get("population", [])
         sat = sum(1 for g in pop if genome_id(g) in scored) / max(len(pop), 1)
-        if sat >= 0.9:
-            state = "⚠ converged/spinning — restart run_engine for the random-immigrant fix"
-        elif sat >= 0.5:
-            state = "nearing convergence"
-        else:
-            state = "exploring"
+        age_min = (time.time() - p.stat().st_mtime) / 60.0
+        state = classify_population(sat, age_min)
         print(f"  {name:5} gen {gen:>5} | best {max(fits):6.2f} | population {sat:.0%} already-explored — {state}")
 
     # ── numeric search ───────────────────────────────────────────────────────
