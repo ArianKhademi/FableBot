@@ -109,7 +109,7 @@ def tpe_refine_genome(
 # ── fitness ──────────────────────────────────────────────────────────────────
 
 
-def genome_fitness(oos_sharpe: float, oos_trades: int, is_sharpe: float = None,
+def genome_fitness(oos_sharpe: float, oos_trades: int, is_sharpe: Optional[float] = None,
                    min_trades: int = 20, gap_lambda: float = 0.5) -> float:
     """Walk-forward fitness: OOS Sharpe, penalised when the trade count is too
     thin to trust (keeps the GA from chasing 3-trade flukes) AND when the
