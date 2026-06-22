@@ -285,6 +285,19 @@ genome search, and now validates the best genomes through the gate). Run **one**
 of them, not both — they share state files. It prints a per-cycle heartbeat so
 you can see it working.
 
+Once the traded set has *converged* (engine_status shows a high population
+saturation / `⚠ spinning`, and the best genome stops rising), point the engine at
+the broad scan list instead — it keeps discovering on fresh, lower-noise symbols
+rather than idling on the exhausted five:
+```bash
+python3 scripts/run_engine.py --cycles 0 --universe    # genome search over config.yaml: universe
+```
+Universe symbols carry no `param_bounds`, so this runs the **genome (structure)
+search only** — the numeric param tuner needs a bounded space and is skipped for
+them. Qualified discoveries still land in `state/genome_proposals.jsonl` for the
+reviewer to ship; the live book changes only when a human (or the nightly
+reviewer) edits `config.yaml`.
+
 **Cron (periodic):**
 ```cron
 45 20 * * * cd /path/to/FableBot && python3 scripts/rotate_universe.py --screen-top 12 >> logs/rotation.log 2>&1
