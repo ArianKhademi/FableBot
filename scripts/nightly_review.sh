@@ -15,6 +15,27 @@ cd "$(dirname "$0")/.."
 # are on PATH so claude/gh/python3 resolve the same way they do in a shell.
 export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$PATH"
 
+# Cron has no login keychain, so gh's stored token is invisible (this is why the
+# job failed every night with "gh is not authenticated"). Load a Personal Access
+# Token from a gitignored file outside the repo; gh honours GH_TOKEN ahead of the
+# keyring, and `gh auth setup-git` then serves it to git over HTTPS — no keychain.
+SECRETS="${FABLEBOT_SECRETS:-$HOME/.config/fablebot/secrets.env}"
+if [ -f "$SECRETS" ]; then
+    set -a
+    . "$SECRETS" || { echo "REVIEW FAILED: could not source $SECRETS (check shell syntax)" >&2; exit 1; }
+    set +a
+fi
+export GH_TOKEN="${GH_TOKEN:-${GITHUB_TOKEN:-}}"
+export GITHUB_TOKEN="${GITHUB_TOKEN:-$GH_TOKEN}"
+gh auth setup-git 2>/dev/null || true
+
+# Always restore the live branch on exit. If any step after the checkout below
+# fails (claude, git push, gh pr create), the working tree must NOT be stranded
+# on the review branch — the other cron jobs and run_engine share this tree and
+# would then run the bot's proposed, unmerged code. The trap fires on success too.
+START_REF="$(git symbolic-ref --quiet --short HEAD || git rev-parse HEAD)"
+trap 'git checkout --quiet "$START_REF" 2>/dev/null || true' EXIT
+
 DATE="$(date +%Y-%m-%d)"
 BRANCH="bot-review/${DATE}"
 
@@ -27,8 +48,15 @@ command -v python3 >/dev/null 2>&1 || fail "python3 not found on PATH"
 command -v git     >/dev/null 2>&1 || fail "git not found on PATH"
 command -v claude  >/dev/null 2>&1 || fail "claude CLI not found on PATH — is Claude Code installed for this user?"
 command -v gh      >/dev/null 2>&1 || fail "gh CLI not found on PATH — brew install gh"
-gh auth status >/dev/null 2>&1 || fail "gh is not authenticated — run: gh auth login"
-git diff --quiet || fail "working tree has uncommitted changes — commit or stash them so the review can branch safely"
+gh auth status >/dev/null 2>&1 || gh api user >/dev/null 2>&1 \
+    || fail "gh cannot authenticate — set GH_TOKEN in $SECRETS (a GitHub PAT). See scripts/README or the repo docs."
+# Only source changes should block the review; generated artefacts (logs the cron
+# appends to, analysis/ digests the review itself regenerates) must not. Use
+# porcelain so STAGED and UNTRACKED source changes are caught too, not just
+# unstaged edits — otherwise they'd ride onto the review branch and into its PR.
+if [ -n "$(git status --porcelain -- ':!logs' ':!analysis')" ]; then
+    fail "working tree has uncommitted/untracked source changes — commit or stash them so the review can branch safely"
+fi
 
 # 1. Digest the journal and summarise the optimizer's findings so the reviewer
 #    has a single consolidated view rather than raw JSONL to parse.
@@ -57,7 +85,6 @@ else
     echo "Review complete: no change warranted."
 fi
 
-# 5. Return to the live branch so the bot keeps running yesterday's code
-#    until a human merges the proposal.
-git checkout -
+# 5. The EXIT trap restores the live branch (START_REF) so the bot keeps running
+#    yesterday's code until a human merges the proposal — on success OR abort.
 echo "=== review finished ==="

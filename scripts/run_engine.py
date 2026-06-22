@@ -124,7 +124,7 @@ def main() -> None:
                     g = ga.ask()
                     while g is not None:
                         t = search.evaluate_genome(search_df, inst.symbol, inst.timeframe, g, friction_bps=friction)
-                        ga.tell(g, search.genome_fitness(t.oos_sharpe, t.oos_trades) if t else -1e9)
+                        ga.tell(g, search.genome_fitness(t.oos_sharpe, t.oos_trades, t.is_sharpe) if t else -1e9)
                         g = ga.ask()
                     ga.evolve()
                 ga.save(pop_path)

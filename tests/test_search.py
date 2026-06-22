@@ -38,6 +38,35 @@ def test_genome_fitness_penalises_thin_trades():
     assert search.genome_fitness(float("nan"), 50) < -1e8
 
 
+def test_genome_fitness_penalises_is_oos_gap():
+    # same OOS Sharpe, but a wide IS>>OOS gap (overfit) scores lower
+    clean = search.genome_fitness(2.0, 50, is_sharpe=2.2)
+    overfit = search.genome_fitness(2.0, 50, is_sharpe=10.0)
+    assert overfit < clean
+    # backward-compatible: no is_sharpe → old OOS-only behaviour
+    assert search.genome_fitness(2.0, 50) == 2.0
+    # only IS>>OOS is punished; OOS>=IS is not
+    assert search.genome_fitness(2.0, 50, is_sharpe=1.0) == search.genome_fitness(2.0, 50)
+
+
+def test_inject_immigrants_breaks_convergence_spin():
+    """When every genome is already scored (converged), evolve() must inject
+    fresh genomes so the search keeps evaluating instead of spinning."""
+    rng = np.random.default_rng(0)
+    s = search.GeneticSearch(rng, population_size=12, seeds=dsl.seed_genomes())
+    # simulate a fully converged population: every member already scored
+    pop = [dsl.sample_genome(rng) for _ in range(12)]
+    for g in pop:
+        s.scores[dsl.genome_id(g)] = 1.0
+    next_pop = list(pop)
+    s._inject_immigrants(next_pop, n_elite=3)
+    # elites untouched
+    assert [dsl.genome_id(g) for g in next_pop[:3]] == [dsl.genome_id(g) for g in pop[:3]]
+    # enough fresh (unscored) genomes injected into non-elite slots
+    novel = sum(1 for g in next_pop if dsl.genome_id(g) not in s.scores)
+    assert novel >= max(1, 12 // 4)
+
+
 # ── genetic search ───────────────────────────────────────────────────────────
 
 def _drain_and_score(s, fitness):

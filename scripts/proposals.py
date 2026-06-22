@@ -9,6 +9,7 @@
 
 import argparse
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -55,8 +56,8 @@ def overfitting_gap(trials: list[dict]) -> float:
         if not t.get("is_baseline")
         and isinstance(t.get("is_sharpe"), (int, float))
         and isinstance(t.get("oos_sharpe"), (int, float))
-        and t["is_sharpe"] == t["is_sharpe"]  # not NaN
-        and t["oos_sharpe"] == t["oos_sharpe"]
+        and math.isfinite(t["is_sharpe"])   # rejects NaN and ±inf
+        and math.isfinite(t["oos_sharpe"])
     ]
     if not gaps:
         return float("nan")
@@ -134,22 +135,27 @@ def render(store: ProposalStore, history_path: Path) -> str:
         n = len(trials)
         baseline = next((t for t in reversed(trials) if t.get("is_baseline")), None)
         non_baseline = [t for t in trials if not t.get("is_baseline")]
-        if non_baseline:
-            best = max(non_baseline, key=lambda t: t["oos_sharpe"])
-            worst = min(non_baseline, key=lambda t: t["oos_sharpe"])
-            avg_oos = sum(t["oos_sharpe"] for t in non_baseline) / len(non_baseline)
+        # Aggregate only over finite Sharpes; degenerate trials log -inf and would
+        # otherwise poison avg/worst (and the IS-OOS gap) for the whole instrument.
+        finite = [t for t in non_baseline if math.isfinite(t.get("oos_sharpe", float("-inf")))]
+        if finite:
+            best = max(finite, key=lambda t: t["oos_sharpe"])
+            worst = min(finite, key=lambda t: t["oos_sharpe"])
+            avg_oos = sum(t["oos_sharpe"] for t in finite) / len(finite)
             baseline_sharpe = f"{baseline['oos_sharpe']:.3f}" if baseline else "n/a"
             gap = overfitting_gap(trials)
-            gap_str = f", IS-OOS gap: {gap:+.2f}" if gap == gap else ""
+            gap_str = f", IS-OOS gap: {gap:+.2f}" if math.isfinite(gap) else ""
+            degenerate = len(non_baseline) - len(finite)
+            deg_str = f", {degenerate} degenerate" if degenerate else ""
             lines.append(
                 f"- **{key}**: {len(trials)} trials total "
                 f"(baseline OOS Sharpe: {baseline_sharpe}, "
                 f"best found: {best['oos_sharpe']:.3f}, "
                 f"avg: {avg_oos:.3f}, "
-                f"worst: {worst['oos_sharpe']:.3f}{gap_str})"
+                f"worst: {worst['oos_sharpe']:.3f}{gap_str}{deg_str})"
             )
         else:
-            lines.append(f"- **{key}**: {n} trials (baseline only so far)")
+            lines.append(f"- **{key}**: {n} trials (no finite OOS Sharpe yet)")
 
     lines += [
         "",

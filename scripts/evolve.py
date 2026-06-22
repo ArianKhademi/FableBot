@@ -42,10 +42,10 @@ def evaluate_generation(ga, df, symbol, timeframe, risk, friction, pool, oos_sha
         g = ga.ask()
     args = [(df, symbol, timeframe, g, risk, friction) for g in pending]
     results = list(pool.map(search._eval_worker, args)) if pool else [search._eval_worker(a) for a in args]
-    for genome, (sharpe, trades) in zip(pending, results):
-        ga.tell(genome, search.genome_fitness(sharpe, trades))
-        if np.isfinite(sharpe):
-            oos_sharpes.append(sharpe)
+    for genome, (is_sharpe, oos_sharpe, trades) in zip(pending, results):
+        ga.tell(genome, search.genome_fitness(oos_sharpe, trades, is_sharpe))
+        if np.isfinite(oos_sharpe):
+            oos_sharpes.append(oos_sharpe)
 
 
 def evolve_instrument(inst, df, args, pool, proposals_path):

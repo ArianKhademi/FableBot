@@ -22,6 +22,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from fablebot.dsl import genome_id
+
 ROOT = Path(__file__).resolve().parent.parent
 STATE = ROOT / "state"
 
@@ -69,14 +71,20 @@ def main() -> None:
         if not fits:
             print(f"  {name:5} gen {gen:>5} — no evaluations yet")
             continue
-        def best_at(frac):
-            n = max(1, int(len(fits) * frac))
-            return max(fits[:n])
-        epg = len(hist) / max(gen, 1)
-        trend = "rising" if best_at(1.0) > best_at(0.25) + 1e-6 else "flat/plateaued"
-        print(f"  {name:5} gen {gen:>5} | best {max(fits):6.2f} "
-              f"(@25%→now: {best_at(.25):.2f}→{max(fits):.2f}, {trend}) | "
-              f"{epg:.1f} evals/gen {'⚠ spinning' if epg < 0.5 else ''}")
+        # Live convergence signal: how much of the CURRENT population is already
+        # scored. ~100% means crossover/mutation only regenerate seen genomes —
+        # the GA is spinning. (Retained history is capped + not chronological, so
+        # an in-history "curve" would mislead; saturation reflects the present.)
+        scored = set(d.get("scores", {}).keys())
+        pop = d.get("population", [])
+        sat = sum(1 for g in pop if genome_id(g) in scored) / max(len(pop), 1)
+        if sat >= 0.9:
+            state = "⚠ converged/spinning — restart run_engine for the random-immigrant fix"
+        elif sat >= 0.5:
+            state = "nearing convergence"
+        else:
+            state = "exploring"
+        print(f"  {name:5} gen {gen:>5} | best {max(fits):6.2f} | population {sat:.0%} already-explored — {state}")
 
     # ── numeric search ───────────────────────────────────────────────────────
     print("\nNUMERIC SEARCH  (random param tuning — explores, plateaus)")
