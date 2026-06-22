@@ -13,6 +13,7 @@ foreground run; --cycles bounds it (0 = forever).
 
   python3 scripts/run_engine.py --cycles 1 --gens-per-cycle 1
   python3 scripts/run_engine.py --cycles 0 --workers 8          # run forever
+  python3 scripts/run_engine.py --cycles 0 --universe           # discover across the universe
 
 Evidence only — never edits config.yaml.
 """
@@ -31,7 +32,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from fablebot import search
-from fablebot.config import load_config
+from fablebot.config import load_config, universe_instruments
 from fablebot.data import source_from_config
 from fablebot.optimizer import (
     BARS_PER_YEAR, BacktestHistory, ContinuousOptimizer, deflation_inputs, split_search_holdout,
@@ -39,6 +40,19 @@ from fablebot.optimizer import (
 from fablebot.pipeline import CANDIDATE, ProposalStore, QUALIFIED
 
 ROOT = Path(__file__).resolve().parent.parent
+
+
+def select_targets(config, universe: bool):
+    """Which instruments the engine searches this run. Default: the traded
+    instruments (numeric param tuning + genome search). With ``universe=True``:
+    the broad config 'universe' scan list, so a *converged* engine keeps
+    discovering on fresh, lower-noise symbols instead of spinning on the
+    exhausted traded set. Universe instruments carry no param_bounds, so they get
+    the genome (structure) search only — the numeric param tuner is skipped for
+    them. Either way this only writes evidence; it never edits config.yaml."""
+    if universe:
+        return universe_instruments(config)
+    return list(config.instruments.values())
 
 
 def main() -> None:
@@ -51,6 +65,9 @@ def main() -> None:
     parser.add_argument("--workers", type=int, default=os.cpu_count() or 1)
     parser.add_argument("--sleep", type=float, default=0.0)
     parser.add_argument("--seed", type=int, default=None)
+    parser.add_argument("--universe", action="store_true",
+                        help="search the config 'universe' scan list (genome search only) instead of "
+                             "the traded instruments — use when the traded set has converged")
     parser.add_argument("--validate-every", type=int, default=25,
                         help="every N cycles, run the best genome per instrument through the full "
                              "gate and write qualified ones to genome_proposals.jsonl")
@@ -72,7 +89,10 @@ def main() -> None:
         seed=args.seed, friction_bps=friction,
     )
 
-    instruments = [i for i in config.instruments.values() if i.param_bounds]
+    instruments = select_targets(config, args.universe)
+    if args.universe:
+        print(f"[engine] universe mode: genome search over {len(instruments)} scan symbols "
+              f"(numeric param tuning skipped — these carry no param_bounds)", flush=True)
     rng = np.random.default_rng(args.seed)
     populations = {}  # instrument key -> GeneticSearch
     prev_best: dict[str, float] = {}  # instrument -> best genome fitness last cycle
@@ -103,9 +123,12 @@ def main() -> None:
             gates_run = cycle % args.validate_every == 0
             genomes_qualified = 0
             for inst in instruments:
-                # 1) numeric optimizer: parameter trials + drain one validation
-                optimizer.validate_one()
-                trials_run += len(optimizer.trial_batch(inst, n=args.trials_per_cycle, pool=pool))
+                # 1) numeric optimizer: parameter trials + drain one validation.
+                #    Only instruments with param_bounds have a numeric search space
+                #    (the universe scan list does not — it gets the genome search only).
+                if inst.param_bounds:
+                    optimizer.validate_one()
+                    trials_run += len(optimizer.trial_batch(inst, n=args.trials_per_cycle, pool=pool))
 
                 # 2) genome search: evolve, persisted across restarts
                 try:

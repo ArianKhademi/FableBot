@@ -55,7 +55,12 @@ instruments:
     symbol: "^GSPC"
     name: "S&P 500"
     strategy: mean_reversion
-    timeframe: "15m"
+    # Daily, not 15m. On 15m the Sharpe estimate is noise-dominated (the whole
+    # reason nothing validated), and yfinance serves only ~60 days of it. Daily
+    # gives decades across many regimes, so the held-out gate is meaningful — and
+    # short-horizon mean-reversion ("buy the dip") is a real effect on the daily
+    # S&P. lookback=20 is now 20 days, a sensible dip-buy window.
+    timeframe: "1d"
     params:
       lookback: 20
       entry_z: 2.0
@@ -72,6 +77,9 @@ instruments:
     symbol: "^IXIC"
     name: "Nasdaq Composite"
     strategy: mean_reversion
+    # Left on 15m for now because it has an open paper position — changing its
+    # timeframe mid-trade would orphan that position. Move it to 1d (like SPX)
+    # once the position closes.
     timeframe: "15m"
     params:
       lookback: 20
