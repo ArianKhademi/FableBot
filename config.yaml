@@ -77,10 +77,11 @@ instruments:
     symbol: "^IXIC"
     name: "Nasdaq Composite"
     strategy: mean_reversion
-    # Left on 15m for now because it has an open paper position — changing its
-    # timeframe mid-trade would orphan that position. Move it to 1d (like SPX)
-    # once the position closes.
-    timeframe: "15m"
+    # Daily, matching SPX: 15m Sharpe is noise-dominated and yfinance serves only
+    # ~60 days of it, while daily gives decades across regimes (the gate becomes
+    # meaningful) and short-horizon "buy the dip" mean-reversion is a real daily
+    # effect. Switched only once the prior 15m position closed — see PR notes.
+    timeframe: "1d"
     params:
       lookback: 20
       entry_z: 2.0
