@@ -52,3 +52,28 @@ def test_unreadable_file_is_unknown_not_flat(tmp_path):
     code, _ = m.classify(p, "NDX")
     assert code == m.UNKNOWN
     assert code != m.FLAT
+
+
+def test_nondict_positions_is_unknown_not_flat(tmp_path):
+    """Parseable but structurally wrong `positions` must be UNKNOWN, never FLAT.
+    Most dangerous case: `{"positions": ["NDX"]}` lists NDX open yet has no dict
+    keys — coercing it to an empty set would read as FLAT and orphan the trade."""
+    m = _mod()
+    p = tmp_path / "portfolio.json"
+    for payload in ('{"positions": null}', '{"positions": ["NDX","GOLD"]}',
+                    '{"positions": "NDX"}', '{"positions": 5}'):
+        p.write_text(payload)
+        code, _ = m.classify(p, "NDX")
+        assert code == m.UNKNOWN, payload
+        assert code != m.FLAT, payload
+
+
+def test_nondict_toplevel_is_unknown_not_flat(tmp_path):
+    """A bare list/string/number/null/bool at top level is corrupt state, not
+    flat — and must not crash with a traceback either."""
+    m = _mod()
+    p = tmp_path / "portfolio.json"
+    for payload in ('["NDX"]', '"NDX"', 'null', '42', 'true'):
+        p.write_text(payload)
+        code, _ = m.classify(p, "NDX")
+        assert code == m.UNKNOWN, payload

@@ -24,10 +24,23 @@ ROOT = Path(__file__).resolve().parent.parent
 FLAT, OPEN, UNKNOWN = 0, 1, 2
 
 
+class CorruptState(Exception):
+    """Portfolio JSON parsed, but isn't shaped like broker state. Treated as
+    UNKNOWN, never FLAT — malformed state must not masquerade as 'no positions'
+    (which would let a gated switch land mid-trade and orphan the position)."""
+
+
 def open_instruments(portfolio: dict) -> set:
-    """Instrument keys with an open position in a parsed portfolio dict."""
+    """Instrument keys with an open position. Raises CorruptState if the
+    structure isn't a dict with a dict ``positions`` — coercing garbage to an
+    empty set would read as FLAT, the exact false-safe we must avoid (e.g.
+    ``{"positions": ["NDX"]}`` lists NDX open yet has no dict keys)."""
+    if not isinstance(portfolio, dict):
+        raise CorruptState(f"top-level JSON is {type(portfolio).__name__}, expected object")
     positions = portfolio.get("positions", {})
-    return set(positions) if isinstance(positions, dict) else set()
+    if not isinstance(positions, dict):
+        raise CorruptState(f"'positions' is {type(positions).__name__}, expected object")
+    return set(positions)
 
 
 def is_flat(portfolio: dict, instrument: str) -> bool:
@@ -35,15 +48,19 @@ def is_flat(portfolio: dict, instrument: str) -> bool:
 
 
 def classify(portfolio_path: Path, instrument: str) -> tuple[int, str]:
-    """Return (exit_code, human_message). A missing or unparseable file is
-    UNKNOWN, never FLAT — we must not signal 'safe' on uncertain state."""
+    """Return (exit_code, human_message). A missing, unparseable, OR
+    structurally-wrong file is UNKNOWN, never FLAT — we must not signal 'safe'
+    on uncertain state."""
     if not portfolio_path.exists():
         return UNKNOWN, f"UNKNOWN {instrument}: {portfolio_path} does not exist — cannot confirm flat"
     try:
         portfolio = json.loads(portfolio_path.read_text())
     except Exception as exc:  # noqa: BLE001 — any parse failure is 'unknown'
         return UNKNOWN, f"UNKNOWN {instrument}: cannot parse {portfolio_path} ({exc})"
-    openset = sorted(open_instruments(portfolio))
+    try:
+        openset = sorted(open_instruments(portfolio))
+    except CorruptState as exc:
+        return UNKNOWN, f"UNKNOWN {instrument}: corrupt state ({exc})"
     if instrument in openset:
         return OPEN, f"OPEN {instrument} (open: {openset})"
     return FLAT, f"FLAT {instrument} (open: {openset})"
