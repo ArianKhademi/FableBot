@@ -3,12 +3,14 @@ from __future__ import annotations
 from .base import Action, Signal, Strategy
 from .mean_reversion import MeanReversion
 from .momentum_breakout import MomentumBreakout
+from .regime import RegimeSwitch
 from .trend_following import TrendFollowing
 
 STRATEGIES: dict[str, type[Strategy]] = {
     "mean_reversion": MeanReversion,
     "momentum_breakout": MomentumBreakout,
     "trend_following": TrendFollowing,
+    "regime": RegimeSwitch,
 }
 
 
@@ -33,6 +35,7 @@ __all__ = [
     "MeanReversion",
     "MomentumBreakout",
     "TrendFollowing",
+    "RegimeSwitch",
     "STRATEGIES",
     "build_strategy",
 ]
