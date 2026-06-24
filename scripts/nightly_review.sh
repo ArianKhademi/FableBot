@@ -12,8 +12,14 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 
 # Cron runs with a bare-bones environment; make sure Homebrew and user bins
-# are on PATH so claude/gh/python3 resolve the same way they do in a shell.
+# are on PATH so claude/gh resolve the same way they do in a shell.
 export PATH="/opt/homebrew/bin:/usr/local/bin:$HOME/.local/bin:$HOME/bin:$PATH"
+
+# Pin Python to Apple's /usr/bin/python3 (what rotate_universe/train already use).
+# Under macOS cron, TCC is per-binary: a Homebrew python in ~/Documents hits
+# "Operation not permitted", while the signed system python is allowed — and it
+# has the deps. Override with FABLEBOT_PYTHON if you ever need a different one.
+PY="${FABLEBOT_PYTHON:-/usr/bin/python3}"
 
 # Cron has no login keychain, so gh's stored token is invisible (this is why the
 # job failed every night with "gh is not authenticated"). Load a Personal Access
@@ -44,7 +50,7 @@ echo "=== nightly review ${DATE} ($(date '+%H:%M')) ==="
 fail() { echo "REVIEW FAILED: $1" >&2; exit 1; }
 
 # Preflight: surface the actual problem instead of a bare 'fatal:' line.
-command -v python3 >/dev/null 2>&1 || fail "python3 not found on PATH"
+command -v "$PY" >/dev/null 2>&1 || fail "python3 not found at '$PY' (set FABLEBOT_PYTHON)"
 command -v git     >/dev/null 2>&1 || fail "git not found on PATH"
 command -v claude  >/dev/null 2>&1 || fail "claude CLI not found on PATH — is Claude Code installed for this user?"
 command -v gh      >/dev/null 2>&1 || fail "gh CLI not found on PATH — brew install gh"
@@ -60,8 +66,8 @@ fi
 
 # 1. Digest the journal and summarise the optimizer's findings so the reviewer
 #    has a single consolidated view rather than raw JSONL to parse.
-python3 scripts/analyze.py --days 30 --write analysis/latest_digest.md
-python3 scripts/proposals.py --write analysis/latest_proposals.md 2>/dev/null || true
+"$PY" scripts/analyze.py --days 30 --write analysis/latest_digest.md
+"$PY" scripts/proposals.py --write analysis/latest_proposals.md 2>/dev/null || true
 
 # 2. Review on a fresh branch off main so proposals never touch the running code.
 git fetch origin main \
