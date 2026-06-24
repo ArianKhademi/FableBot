@@ -23,6 +23,9 @@ data:
   source: yfinance
   cache_dir: state/data_cache
   cache_ttl_minutes: 1440
+  # Optional: a folder of local daily CSVs (e.g. a WRDS/CRSP export) used for the
+  # history/search feed only — clean, deep, reproducible. See docs/wrds-data.md.
+  # csv_dir: data
 
 universe:
   # A large, config-driven scan list for the genome search (scripts/evolve.py
