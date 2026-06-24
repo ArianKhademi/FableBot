@@ -54,6 +54,53 @@ def test_min_score_floor_blocks_weak_newcomers():
     assert plan["keep"] == ["A"]
 
 
+# ── realized-P&L tilt ────────────────────────────────────────────────────────
+
+def _trades(instrument, pnl, risk=100.0, n=10):
+    return [{"instrument": instrument, "pnl": pnl, "risk_amount": risk,
+             "closed_at": f"2026-01-{d+1:02d}T00:00:00"} for d in range(n)]
+
+
+def test_performance_tilt_rewards_winners_and_penalises_losers():
+    trades = _trades("WIN", 100.0) + _trades("LOSE", -50.0)
+    tilt = rotation.performance_tilt(trades, min_trades=5, scale=0.4, cap=0.5)
+    assert tilt["WIN"] == 0.4    # +1R expectancy * 0.4
+    assert tilt["LOSE"] == -0.2  # -0.5R expectancy * 0.4
+    # cap binds for an extreme winner
+    assert rotation.performance_tilt(_trades("HUGE", 1000.0), min_trades=5)["HUGE"] == 0.5
+
+
+def test_performance_tilt_needs_enough_trades():
+    tilt = rotation.performance_tilt(_trades("THIN", 100.0, n=3), min_trades=6)
+    assert "THIN" not in tilt  # too few trades -> no tilt (noise)
+
+
+def test_performance_tilt_skips_zero_risk_trades():
+    # all risk_amount 0 -> no R can be formed -> no tilt
+    tilt = rotation.performance_tilt(_trades("ZR", 50.0, risk=0.0, n=10), min_trades=6)
+    assert "ZR" not in tilt
+
+
+def test_losing_incumbent_demoted_past_hysteresis():
+    """A losing incumbent that churn_margin alone would keep gets dropped once
+    its negative realized-P&L tilt overcomes the margin."""
+    current, scores = ["A"], {"A": 1.0, "B": 1.2}
+    # without tilt, margin 0.5 keeps A (1.5 > 1.2) — see test_hysteresis_resists_churn
+    plan = rotation.propose_rotation(current, scores, set(), max_active=1, min_score=0.3,
+                                     churn_margin=0.5, performance={"A": -0.5})
+    assert plan["drop"] == ["A"] and plan["add"] == ["B"]  # A effective 1.0 < B 1.2
+
+
+def test_profitable_incumbent_kept_against_a_better_challenger():
+    """A profitable incumbent stays even when a challenger outscores it on
+    backtest tradeability, because its realized edge tips the ranking."""
+    current, scores = ["A"], {"A": 1.0, "B": 1.2}
+    plan = rotation.propose_rotation(current, scores, set(), max_active=1, min_score=0.3,
+                                     churn_margin=0.0, performance={"A": 0.4})
+    assert plan["keep"] == ["A"] and plan["add"] == []  # A effective 1.4 > B 1.2
+    assert plan["performance"] == {"A": 0.4}
+
+
 # ── open-position reading ────────────────────────────────────────────────────
 
 def test_read_open_positions(tmp_path):
@@ -61,6 +108,13 @@ def test_read_open_positions(tmp_path):
     p.write_text(json.dumps({"positions": {"OIL": {}, "GOLD": {}}}))
     assert rotation.read_open_positions(p) == {"OIL", "GOLD"}
     assert rotation.read_open_positions(tmp_path / "missing.json") == set()
+
+
+def test_read_trades(tmp_path):
+    p = tmp_path / "portfolio.json"
+    p.write_text(json.dumps({"trades": [{"instrument": "OIL", "pnl": 5.0}]}))
+    assert rotation.read_trades(p) == [{"instrument": "OIL", "pnl": 5.0}]
+    assert rotation.read_trades(tmp_path / "missing.json") == []
 
 
 # ── scoring a symbol ─────────────────────────────────────────────────────────

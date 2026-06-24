@@ -14,6 +14,12 @@ Guardrails (in :func:`propose_rotation`):
   - **Hysteresis.** A challenger must beat a current holding by ``churn_margin``
     to replace it, so the book doesn't thrash on noise.
   - **Quality floor.** A newcomer must clear ``min_score`` to be added at all.
+  - **Track-record tilt.** The score above is backtest *tradeability*; what the
+    bot has *actually* earned matters too. :func:`performance_tilt` nudges each
+    instrument's effective score up when its realized trades have been profitable
+    and down when they've been losing — so a working book isn't dropped for a
+    flashy backtest, and a persistently-losing one is demoted until it earns its
+    way back.
 """
 
 from __future__ import annotations
@@ -62,6 +68,56 @@ def read_open_positions(portfolio_path: Path | str) -> set[str]:
         return set()
 
 
+def read_trades(portfolio_path: Path | str) -> list:
+    """Closed trades recorded in the portfolio (for the realized-P&L tilt)."""
+    path = Path(portfolio_path)
+    if not path.exists():
+        return []
+    try:
+        return json.loads(path.read_text()).get("trades", []) or []
+    except Exception:
+        return []
+
+
+def performance_tilt(
+    trades: list,
+    recent: int = 30,
+    min_trades: int = 6,
+    scale: float = 0.4,
+    cap: float = 0.5,
+) -> dict[str, float]:
+    """Per-instrument score adjustment from the bot's *realized* track record.
+
+    For each instrument with at least ``min_trades`` closed trades, take its
+    expectancy in **R** (mean ``pnl / risk_amount``) over its most recent
+    ``recent`` trades and map it to a bounded tilt ``clamp(expectancy_R * scale,
+    -cap, +cap)``. Expectancy-in-R is risk-normalised, so instruments with
+    different sizing and trade counts compare fairly, and it's on the same rough
+    scale as the OOS-Sharpe scores it adjusts.
+
+    Positive => the bot has been making money there (rotation should be reluctant
+    to drop it); negative => it's been losing (rotation should demote it, even
+    past the churn-margin hysteresis). Instruments the bot has never traded get
+    no entry here, so newcomers are judged on tradeability score alone. Trades
+    with no risk recorded (``risk_amount`` 0/absent) can't form an R and are
+    skipped; if too few remain, the instrument gets no tilt (insufficient
+    evidence — same spirit as the analytics' 20-trade noise floor).
+    """
+    by: dict[str, list] = {}
+    for t in trades:
+        if isinstance(t.get("pnl"), (int, float)) and t.get("closed_at"):
+            by.setdefault(t.get("instrument", "?"), []).append(t)
+    tilt: dict[str, float] = {}
+    for key, ts in by.items():
+        ts = sorted(ts, key=lambda t: t["closed_at"])[-recent:]
+        rs = [t["pnl"] / t["risk_amount"] for t in ts if t.get("risk_amount")]
+        if len(rs) < min_trades:
+            continue
+        exp_r = sum(rs) / len(rs)
+        tilt[key] = max(-cap, min(cap, exp_r * scale))
+    return tilt
+
+
 def propose_rotation(
     current: list[str],
     scores: dict[str, float],
@@ -69,16 +125,24 @@ def propose_rotation(
     max_active: int,
     min_score: float = 0.0,
     churn_margin: float = 0.0,
+    performance: Optional[dict[str, float]] = None,
 ) -> dict:
     """Decide the next live book. Pure. ``current`` is today's traded keys,
     ``scores`` maps every candidate key (current + universe) to its score,
-    ``open_keys`` are instruments with a live position (sticky)."""
+    ``open_keys`` are instruments with a live position (sticky), and
+    ``performance`` is the realized-P&L tilt per instrument (see
+    :func:`performance_tilt`) — folded into the ranking so what's actually been
+    profitable is harder to drop and what's been losing is easier."""
     current, open_keys = set(current), set(open_keys)
+    performance = performance or {}
 
-    # A current holding gets a churn_margin bonus, so a challenger must beat it
-    # by that margin to outrank it — hysteresis against thrashing.
+    # Effective rank = tradeability score, plus a churn_margin bonus for current
+    # holdings (hysteresis against thrashing), plus the realized-P&L tilt. A
+    # losing holding's negative tilt can overcome the churn margin and push it out;
+    # a profitable one's positive tilt makes it stickier.
     def effective(k: str) -> float:
-        return scores.get(k, float("-inf")) + (churn_margin if k in current else 0.0)
+        adj = (churn_margin if k in current else 0.0) + performance.get(k, 0.0)
+        return scores.get(k, float("-inf")) + adj
 
     eligible = [k for k in scores if scores[k] >= min_score or k in current or k in open_keys]
     ranked = sorted(eligible, key=effective, reverse=True)
@@ -99,4 +163,5 @@ def propose_rotation(
         "drop": sorted(current - target_set),
         "keep": sorted(current & target_set),
         "kept_sticky": sorted(open_keys - by_score_top),
+        "performance": {k: round(performance[k], 3) for k in sorted(performance)},
     }

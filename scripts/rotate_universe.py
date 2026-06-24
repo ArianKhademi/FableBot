@@ -91,18 +91,24 @@ def main() -> None:
     scores = {k: s for k, s in zip(keys, results)}
 
     open_keys = rotation.read_open_positions(args.portfolio)
+    perf = rotation.performance_tilt(rotation.read_trades(args.portfolio))
     plan = rotation.propose_rotation(
-        current, scores, open_keys, args.max_active, args.min_score, args.churn_margin
+        current, scores, open_keys, args.max_active, args.min_score, args.churn_margin,
+        performance=perf,
     )
 
     ranked = sorted(scores.items(), key=lambda kv: kv[1], reverse=True)
     lines = ["# Universe rotation recommendation", "",
              f"max_active={args.max_active}, min_score={args.min_score}, churn_margin={args.churn_margin}, "
-             f"friction={friction}bps. Open positions are sticky (never dropped to rotate).", "",
+             f"friction={friction}bps. Open positions are sticky (never dropped to rotate). "
+             "Scores are backtest tradeability; the live-P&L tilt (±R, in score units) adjusts "
+             "the ranking by what the bot has actually earned.", "",
              "## Scores (best gated seed-strategy OOS Sharpe per symbol)"]
     for k, s in ranked:
         tag = " [open]" if k in open_keys else (" [current]" if k in current else "")
-        lines.append(f"- {k}: {s:.3f}{tag}" if s > float("-inf") else f"- {k}: — (no qualifying edge){tag}")
+        tilt = f" · live tilt {perf[k]:+.2f}" if k in perf else ""
+        lines.append(f"- {k}: {s:.3f}{tilt}{tag}" if s > float("-inf")
+                     else f"- {k}: — (no qualifying edge){tilt}{tag}")
     lines += [
         "", "## Proposed book change (human-gated — edit config.yaml to apply)",
         f"- **add**: {plan['add'] or 'none'}",
