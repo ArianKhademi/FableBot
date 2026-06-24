@@ -90,6 +90,34 @@ def _is_stop(trade: dict) -> bool:
     return "hard stop" in trade.get("close_reason", "")
 
 
+def stop_recovery(direction: str, entry_price: float, post_bars, horizon: int) -> dict:
+    """Would a stopped-out trade have come back? Given its direction + entry and
+    the price bars AFTER it was stopped (an iterable of (high, low) tuples), look
+    ``horizon`` bars ahead and report:
+
+      - ``recovered``: did price return to the entry (break-even) within horizon —
+        i.e. the stop locked in a loss the trade would have erased?
+      - ``bars_to_recover``: how many bars that took.
+      - ``best_favorable_per_unit``: the largest in-your-favor move after the stop
+        (per unit) — how much the premature exit left on the table.
+
+    Break-even (not a profit target) is the bar deliberately: clearing it already
+    proves the loss was avoidable, and it's strategy-agnostic, so this works for
+    mean-reversion, momentum, and trend alike."""
+    recovered, bars_to_recover, best = False, None, 0.0
+    for i, (high, low) in enumerate(list(post_bars)[:horizon]):
+        if direction == "long":
+            best = max(best, high - entry_price)
+            if not recovered and high >= entry_price:
+                recovered, bars_to_recover = True, i + 1
+        else:  # short
+            best = max(best, entry_price - low)
+            if not recovered and low <= entry_price:
+                recovered, bars_to_recover = True, i + 1
+    return {"recovered": recovered, "bars_to_recover": bars_to_recover,
+            "best_favorable_per_unit": best}
+
+
 def analyze(entries: list[dict]) -> Digest:
     decisions = [e for e in entries if e["event"] == "decision"]
     trades = _closed_trades(entries, shadow=False)
