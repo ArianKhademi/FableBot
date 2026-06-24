@@ -17,6 +17,7 @@ filter actually saved or cost.
 
 from __future__ import annotations
 
+import json
 import time
 from datetime import datetime
 from pathlib import Path
@@ -129,7 +130,7 @@ class TradingEngine:
         self.broker.update_excursions(key, high, low)
         stopped = self.broker.enforce_stops(key, high, low, close)
         if stopped is not None:
-            log.append(f"{key}: STOPPED OUT {stopped.pnl:+,.2f} ({stopped.close_reason})")
+            log.append(f"{key}: STOPPED OUT {stopped.pnl:+,.2f} ({stopped.close_reason})" + self._acct())
             journal("stopped", stopped.close_reason)
             self.journal.record_trade(stopped)
 
@@ -144,7 +145,7 @@ class TradingEngine:
 
         if signal.action is Action.CLOSE and position is not None:
             trade = self.broker.close_position(key, close, signal.reason)
-            log.append(f"{key}: closed {trade.direction} {trade.pnl:+,.2f} ({signal.reason})")
+            log.append(f"{key}: closed {trade.direction} {trade.pnl:+,.2f} ({signal.reason})" + self._acct())
             journal("close", signal.reason)
             self.journal.record_trade(trade)
         elif signal.opens and position is None and signal.atr > 0:
@@ -180,7 +181,7 @@ class TradingEngine:
                 log.append(
                     f"{key}: opened {direction} {sized.units:.4f} @ {close:,.2f} "
                     f"(stop {sized.stop_price:,.2f}, risking {sized.risk_amount:,.2f}) — "
-                    f"{signal.reason}"
+                    f"{signal.reason}" + self._acct()
                 )
                 journal(signal.action.value, signal.reason)
                 opened_this_cycle = True
@@ -193,7 +194,7 @@ class TradingEngine:
         if strategy.trail_atr_mult and key in self.broker.positions and not opened_this_cycle:
             if self.broker.trail_stop(key, high, low, signal.atr, strategy.trail_atr_mult):
                 new_stop = self.broker.positions[key].stop_price
-                log.append(f"{key}: stop trailed to {new_stop:,.2f}")
+                log.append(f"{key}: stop trailed to {new_stop:,.2f}" + self._acct())
                 journal("trail", f"stop trailed to {new_stop:,.2f}")
         return log
 
@@ -240,6 +241,32 @@ class TradingEngine:
             # Shadow trades trail too, or the counterfactual would flatter
             # whichever book didn't.
             self.shadow.trail_stop(key, high, low, signal.atr, strategy.trail_atr_mult)
+
+    def _acct(self) -> str:
+        """Compact account state, appended to trade-event log lines so the
+        terminal shows equity + live unrealized at each open/close/trail."""
+        total = self.broker.total_equity(self.last_prices)
+        unreal = total - self.broker.equity
+        return f" | acct ${total:,.0f} (real {self.broker.realized_pnl:+,.0f}, unreal {unreal:+,.0f})"
+
+    def _write_dashboard(self) -> None:
+        """Regenerate the read-only dashboard from current state, reusing the
+        marks this cycle already computed (no extra fetch). Best-effort and fully
+        guarded — a dashboard failure must never disturb the trading loop."""
+        path = self.broker.state_path
+        if path is None:
+            return
+        try:
+            from . import dashboard
+            portfolio = json.loads(Path(path).read_text())
+            snapshot = dashboard.build_snapshot(portfolio, self.last_prices)
+            engine_state = dashboard.read_engine_state(Path(path).parent)
+            ts = datetime.now(ZoneInfo(self.config.schedule.timezone)).strftime("%Y-%m-%d %H:%M")
+            (Path(path).parent / "dashboard.html").write_text(
+                dashboard.render_html(snapshot, engine_state, ts)
+            )
+        except Exception as exc:
+            print(f"[dashboard] regen skipped ({type(exc).__name__}: {exc})", flush=True)
 
     def run_cycle(self) -> list[str]:
         """One full pass over all instruments."""
@@ -300,6 +327,7 @@ class TradingEngine:
                 retrained_on = today
             for line in self.run_cycle():
                 print(f"[{now:%H:%M}] {line}", flush=True)
+            self._write_dashboard()  # refresh the read-only dashboard from this cycle's marks
             self._maybe_report(now, "morning", self.config.schedule.morning_report, sent_on)
             self._maybe_report(now, "evening", self.config.schedule.evening_report, sent_on)
             time.sleep(interval)

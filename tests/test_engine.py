@@ -86,6 +86,28 @@ def test_cycle_opens_sized_position_with_stop():
     assert pos.units * (pos.entry_price - pos.stop_price) == pytest.approx(1000.0)
 
 
+def test_trade_events_carry_a_live_account_summary():
+    """Opening/closing/trailing log lines must surface equity + live unrealized,
+    so the terminal tells you the account state at each event (not just the bot)."""
+    engine = engine_with({"^GSPC": dip(1), "^IXIC": flat(2), "BTC-USD": flat(3)})
+    log = engine.run_cycle()
+    opened = next(line for line in log if "SPX: opened long" in line)
+    assert "acct $" in opened and "real" in opened and "unreal" in opened
+
+
+def test_write_dashboard_emits_html_and_never_throws(tmp_path):
+    state = tmp_path / "portfolio.json"
+    engine = engine_with({"^GSPC": dip(1), "^IXIC": flat(2), "BTC-USD": flat(3)}, state_path=state)
+    engine.run_cycle()                      # opens a position, marks prices
+    engine._write_dashboard()
+    out = tmp_path / "dashboard.html"
+    assert out.exists()
+    html = out.read_text()
+    assert html.startswith("<!DOCTYPE html>") and "FableBot" in html
+    # stateless engine (no path) is a safe no-op, not a crash
+    engine_with({"^GSPC": flat(1), "^IXIC": flat(2), "BTC-USD": flat(3)}, state_path=None)._write_dashboard()
+
+
 def test_engine_runs_a_configured_genome_through_the_risk_engine():
     """An instrument carrying a composable-DSL `genome` must trade that genome
     live (not its named strategy), still sized/stopped by the risk engine."""

@@ -106,6 +106,35 @@ def instrument_breakdown(trades: list) -> list:
     return _group_breakdown(trades, "instrument")
 
 
+def build_snapshot(portfolio: dict, marks: dict) -> dict:
+    """Render-ready snapshot from a portfolio dict + current marks (price per
+    open instrument). Marks come from the live feed (the CLI fetches them) or the
+    engine's ``last_prices`` (in-loop, no fetch) — either way, a position with no
+    mark shows no unrealized rather than a guess."""
+    positions = portfolio.get("positions", {})
+    trades = portfolio.get("trades", [])
+    pos_list = []
+    for key, p in positions.items():
+        mark = marks.get(key)
+        unreal = unrealized_pnl({key: p}, marks) if mark is not None else 0.0
+        pos_list.append({
+            "instrument": p.get("instrument", key), "direction": p.get("direction", "?"),
+            "entry_price": float(p.get("entry_price", 0)), "stop_price": float(p.get("stop_price", 0)),
+            "units": float(p.get("units", 0)), "mark": mark, "unrealized": unreal,
+        })
+    recent = sorted((t for t in trades if t.get("closed_at")), key=lambda t: t["closed_at"], reverse=True)[:12]
+    return {
+        "account": account_summary(
+            portfolio.get("starting_equity", 0.0), portfolio.get("realized_pnl", 0.0), positions, marks),
+        "stats": trade_stats(trades),
+        "equity_curve": equity_curve(portfolio.get("starting_equity", 0.0), trades),
+        "by_strategy": strategy_breakdown(trades),
+        "by_instrument": instrument_breakdown(trades),
+        "positions": pos_list,
+        "recent_trades": recent,
+    }
+
+
 # ── engine-side state (the unified view) ─────────────────────────────────────
 
 _PARKED_MIN = 45.0  # population file untouched this long => not worked by the current run
