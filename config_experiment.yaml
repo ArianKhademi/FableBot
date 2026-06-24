@@ -1,0 +1,78 @@
+# Experiment book #2 — a SEPARATE, independent paper account.
+#
+# Run it with its own state so it never touches the main book:
+#   python3 scripts/run_bot.py --config config_experiment.yaml --state-dir state_experiment
+#
+# Hypothesis: mean_reversion is the only strategy that's been profitable live so
+# far (15m, +$3k, 64% win on SPX/NDX), so lean into it — run 15m mean_reversion
+# across a basket of liquid equity-index ETFs on a fresh $100k and watch how it
+# does over time. Same immutable risk engine (1% stop, ATR sizing, correlation
+# filter). The main book is left exactly as it is.
+
+account:
+  starting_equity: 100000.0
+  risk_per_trade: 0.01
+
+schedule:
+  timezone: "America/New_York"
+  morning_report: "07:00"
+  evening_report: "21:00"
+  poll_interval_minutes: 5
+
+correlation:
+  # These ETFs are all broad equity — highly correlated — so cap same-direction
+  # exposure: at most two longs (or shorts) in the group at once.
+  groups:
+    equity: [SPY, QQQ, IWM, DIA, XLK]
+  max_same_direction_per_group: 2
+
+data:
+  source: yfinance
+  cache_dir: state_experiment/data_cache
+  cache_ttl_minutes: 1440
+
+costs:
+  friction_bps: 3.0
+
+# All mean_reversion, 15-minute, with the same params as the profitable SPX/NDX
+# book. z-score vs the 20-bar mean; fade a >2σ stretch, exit as it reverts.
+instruments:
+  SPY:
+    symbol: "SPY"
+    name: "S&P 500 ETF"
+    strategy: mean_reversion
+    timeframe: "15m"
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}
+
+  QQQ:
+    symbol: "QQQ"
+    name: "Nasdaq 100 ETF"
+    strategy: mean_reversion
+    timeframe: "15m"
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}
+
+  IWM:
+    symbol: "IWM"
+    name: "Russell 2000 ETF"
+    strategy: mean_reversion
+    timeframe: "15m"
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}
+
+  DIA:
+    symbol: "DIA"
+    name: "Dow Jones ETF"
+    strategy: mean_reversion
+    timeframe: "15m"
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}
+
+  XLK:
+    symbol: "XLK"
+    name: "Technology Sector ETF"
+    strategy: mean_reversion
+    timeframe: "15m"
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}

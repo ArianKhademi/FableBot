@@ -310,6 +310,15 @@ genome search, and now validates the best genomes through the gate). Run **one**
 of them, not both — they share state files. It prints a per-cycle heartbeat so
 you can see it working.
 
+**Run a second, independent book** (an experiment — its own config, state, and
+dashboard, never touching the main one) by pointing it at a separate state dir:
+```bash
+python3 scripts/run_bot.py --config config_experiment.yaml --state-dir state_experiment
+```
+Its dashboard is `state_experiment/dashboard.html`. The bundled
+`config_experiment.yaml` runs 15-minute mean-reversion (the one strategy that's
+been profitable live) across a basket of equity ETFs on a fresh $100k.
+
 Once the traded set has *converged* (engine_status shows a high population
 saturation / `⚠ spinning`, and the best genome stops rising), point the engine at
 the broad scan list instead — it keeps discovering on fresh, lower-noise symbols
