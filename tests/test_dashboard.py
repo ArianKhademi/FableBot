@@ -97,6 +97,24 @@ def test_render_html_is_complete_and_contains_real_numbers():
     assert "{" not in html.split("<script>")[0].split("<style>")[-1] or True  # CSS braces are fine; smoke only
 
 
+def test_build_snapshot_marks_positions_and_summarises():
+    portfolio = {
+        "starting_equity": 100000.0, "realized_pnl": 60.0,
+        "positions": {"GOLD": {"instrument": "GOLD", "direction": "short", "units": 2.0,
+                               "entry_price": 100.0, "stop_price": 105.0}},
+        "trades": [{"pnl": 100.0, "instrument": "GOLD", "strategy": "trend_following",
+                    "opened_at": "2026-01-01T00:00:00", "closed_at": "2026-01-02T00:00:00"}],
+    }
+    snap = dashboard.build_snapshot(portfolio, {"GOLD": 96.0})
+    assert snap["positions"][0]["mark"] == 96.0
+    assert snap["positions"][0]["unrealized"] == 8.0          # short 100 -> 96, *2
+    assert snap["account"]["unrealized_pnl"] == 8.0
+    assert snap["account"]["total_equity"] == 100068.0        # 100000 + 60 realized + 8 open
+    assert snap["stats"]["count"] == 1
+    # a position with no mark shows no unrealized rather than a guess
+    assert dashboard.build_snapshot(portfolio, {})["positions"][0]["unrealized"] == 0.0
+
+
 def test_render_html_handles_empty_state():
     empty = {
         "account": dashboard.account_summary(100000.0, 0.0, {}, {}),

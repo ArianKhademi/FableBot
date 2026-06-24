@@ -47,31 +47,6 @@ def current_marks(config, positions: dict) -> dict:
     return marks
 
 
-def build_snapshot(portfolio: dict, marks: dict) -> dict:
-    positions = portfolio.get("positions", {})
-    trades = portfolio.get("trades", [])
-    pos_list = []
-    for key, p in positions.items():
-        mark = marks.get(key)
-        unreal = dashboard.unrealized_pnl({key: p}, marks) if mark is not None else 0.0
-        pos_list.append({
-            "instrument": p.get("instrument", key), "direction": p.get("direction", "?"),
-            "entry_price": float(p.get("entry_price", 0)), "stop_price": float(p.get("stop_price", 0)),
-            "units": float(p.get("units", 0)), "mark": mark, "unrealized": unreal,
-        })
-    recent = sorted((t for t in trades if t.get("closed_at")), key=lambda t: t["closed_at"], reverse=True)[:12]
-    return {
-        "account": dashboard.account_summary(
-            portfolio.get("starting_equity", 0.0), portfolio.get("realized_pnl", 0.0), positions, marks),
-        "stats": dashboard.trade_stats(trades),
-        "equity_curve": dashboard.equity_curve(portfolio.get("starting_equity", 0.0), trades),
-        "by_strategy": dashboard.strategy_breakdown(trades),
-        "by_instrument": dashboard.instrument_breakdown(trades),
-        "positions": pos_list,
-        "recent_trades": recent,
-    }
-
-
 def main() -> int:
     ap = argparse.ArgumentParser(description="Generate the FableBot performance dashboard")
     ap.add_argument("--config", default=ROOT / "config.yaml")
@@ -95,7 +70,7 @@ def main() -> int:
         except Exception as exc:
             print(f"[dashboard] live marks unavailable ({exc}) — showing realized only", file=sys.stderr)
 
-    snapshot = build_snapshot(portfolio, marks)
+    snapshot = dashboard.build_snapshot(portfolio, marks)
     engine = dashboard.read_engine_state(Path(args.state_dir))
     generated = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
     html = dashboard.render_html(snapshot, engine, generated)
