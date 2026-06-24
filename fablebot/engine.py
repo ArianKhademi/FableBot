@@ -17,7 +17,6 @@ filter actually saved or cost.
 
 from __future__ import annotations
 
-import json
 import time
 from datetime import datetime
 from pathlib import Path
@@ -249,6 +248,18 @@ class TradingEngine:
         unreal = total - self.broker.equity
         return f" | acct ${total:,.0f} (real {self.broker.realized_pnl:+,.0f}, unreal {unreal:+,.0f})"
 
+    def _portfolio_state(self) -> dict:
+        """The broker's current state as a portfolio dict — built in-memory (not
+        read from disk), so it's always current and works for a brand-new book
+        whose portfolio.json doesn't exist yet."""
+        from dataclasses import asdict
+        return {
+            "starting_equity": self.broker.starting_equity,
+            "realized_pnl": self.broker.realized_pnl,
+            "positions": {k: asdict(p) for k, p in self.broker.positions.items()},
+            "trades": [asdict(t) for t in self.broker.trades],
+        }
+
     def _write_dashboard(self) -> None:
         """Regenerate the read-only dashboard from current state, reusing the
         marks this cycle already computed (no extra fetch). Best-effort and fully
@@ -258,8 +269,7 @@ class TradingEngine:
             return
         try:
             from . import dashboard
-            portfolio = json.loads(Path(path).read_text())
-            snapshot = dashboard.build_snapshot(portfolio, self.last_prices)
+            snapshot = dashboard.build_snapshot(self._portfolio_state(), self.last_prices)
             engine_state = dashboard.read_engine_state(Path(path).parent)
             ts = datetime.now(ZoneInfo(self.config.schedule.timezone)).strftime("%Y-%m-%d %H:%M")
             (Path(path).parent / "dashboard.html").write_text(

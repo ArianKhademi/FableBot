@@ -108,6 +108,26 @@ def test_write_dashboard_emits_html_and_never_throws(tmp_path):
     engine_with({"^GSPC": flat(1), "^IXIC": flat(2), "BTC-USD": flat(3)}, state_path=None)._write_dashboard()
 
 
+def test_write_dashboard_works_for_a_fresh_book(tmp_path):
+    """A brand-new book (the second bot) has no portfolio.json yet; the dashboard
+    must still render at starting equity from the in-memory broker."""
+    state = tmp_path / "portfolio.json"
+    engine = engine_with({"^GSPC": flat(1), "^IXIC": flat(2), "BTC-USD": flat(3)}, state_path=state)
+    assert not state.exists()                       # nothing traded -> no file on disk yet
+    engine._write_dashboard()
+    html = (tmp_path / "dashboard.html").read_text()
+    assert "FableBot" in html and "$100,000" in html  # fresh $100k book renders
+
+
+def test_experiment_config_is_a_valid_mean_reversion_book():
+    from pathlib import Path
+    from fablebot.config import load_config
+    cfg = load_config(Path(__file__).resolve().parent.parent / "config_experiment.yaml")
+    assert cfg.account.starting_equity == 100_000.0
+    assert set(cfg.instruments) == {"SPY", "QQQ", "IWM", "DIA", "XLK"}
+    assert all(i.strategy == "mean_reversion" and i.timeframe == "15m" for i in cfg.instruments.values())
+
+
 def test_engine_runs_a_configured_genome_through_the_risk_engine():
     """An instrument carrying a composable-DSL `genome` must trade that genome
     live (not its named strategy), still sized/stopped by the risk engine."""

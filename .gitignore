@@ -2,10 +2,13 @@ __pycache__/
 *.pyc
 .pytest_cache/
 state/
+state_experiment/
 reports/
 logs/
 .venv/
 venv/
+# downloaded market data (e.g. WRDS/CRSP CSVs) — keep the tickers list tracked
+data/*.csv
 # secrets (PAT for the nightly reviewer); keep tokens out of git entirely
 .env
 secrets.env

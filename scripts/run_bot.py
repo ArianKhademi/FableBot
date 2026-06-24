@@ -1,10 +1,15 @@
 #!/usr/bin/env python3
 """Run the FableBot paper-trading loop, or fire a report on demand.
 
-  python scripts/run_bot.py                   # live loop
+  python scripts/run_bot.py                   # live loop (main book)
   python scripts/run_bot.py --once            # single evaluation cycle
   python scripts/run_bot.py --report morning  # 7am-style briefing now
   python scripts/run_bot.py --report evening  # 9pm-style recap now
+
+Run a second, independent paper book (its own config, state, and dashboard) —
+e.g. an experiment — without touching the main one:
+
+  python scripts/run_bot.py --config config_experiment.yaml --state-dir state_experiment
 """
 
 import argparse
@@ -22,11 +27,18 @@ ROOT = Path(__file__).resolve().parent.parent
 def main() -> None:
     parser = argparse.ArgumentParser(description="FableBot paper-trading bot")
     parser.add_argument("--config", default=ROOT / "config.yaml")
+    parser.add_argument("--state-dir", default=ROOT / "state",
+                        help="where portfolio.json / journal.jsonl / shadow.json / dashboard.html live "
+                             "(use a separate dir to run an independent second book)")
     parser.add_argument("--once", action="store_true", help="run a single cycle and exit")
     parser.add_argument("--report", choices=["morning", "evening"])
     args = parser.parse_args()
 
     config = load_config(args.config)
+    state_dir = Path(args.state_dir)
+    if not state_dir.is_absolute():
+        state_dir = ROOT / state_dir
+    state_dir.mkdir(parents=True, exist_ok=True)
 
     # Two routed sources (per-instrument backend, e.g. crypto -> Binance):
     #  - live feed: UNcached so each cycle trades on fresh prices.
@@ -45,10 +57,10 @@ def main() -> None:
 
     engine = TradingEngine(
         config,
-        state_path=ROOT / "state/portfolio.json",
+        state_path=state_dir / "portfolio.json",
         fetch=live_source.fetch,
-        journal_path=ROOT / "state/journal.jsonl",
-        shadow_state_path=ROOT / "state/shadow.json",
+        journal_path=state_dir / "journal.jsonl",
+        shadow_state_path=state_dir / "shadow.json",
         history_fetch=history_fetch,
     )
 
