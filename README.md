@@ -40,11 +40,12 @@ better while you sleep.
 The instrument list is the *starting* set, not a hard limit — it's
 config-driven, and expanding the universe is on the roadmap (see below).
 
-### Mean reversion (S&P 500, Nasdaq — 15m)
+### Mean reversion (S&P 500, Nasdaq)
 
 Price is measured as a z-score against its 20-bar mean. When an index
 stretches more than 2 standard deviations from the mean, the bot fades the
-move; it exits when price reverts back toward the mean.
+move; it exits when price reverts back toward the mean. (Both now run daily —
+intraday index Sharpe is too noise-dominated to validate.)
 
 ### Momentum breakout (Bitcoin — 1h)
 
