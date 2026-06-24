@@ -1,3 +1,6 @@
+# Shown as the dashboard heading, so multiple books are easy to tell apart.
+name: "FableBot — main"
+
 account:
   starting_equity: 100000.0
   # Hard per-trade risk budget: every trade risks exactly this fraction of

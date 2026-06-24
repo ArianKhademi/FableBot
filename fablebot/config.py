@@ -94,6 +94,9 @@ class Config:
     data: DataConfig = field(default_factory=DataConfig)
     universe: UniverseConfig = field(default_factory=UniverseConfig)
     costs: CostsConfig = field(default_factory=CostsConfig)
+    # Display name for this book — shown as the dashboard heading, so several
+    # bots (main, experiment, …) are distinguishable at a glance.
+    name: str = "FableBot"
 
 
 def load_config(path: str | Path) -> Config:
@@ -110,6 +113,7 @@ def load_config(path: str | Path) -> Config:
         data=DataConfig(**raw.get("data", {})),
         universe=UniverseConfig(**raw.get("universe", {})),
         costs=CostsConfig(**raw.get("costs", {})),
+        name=raw.get("name", "FableBot"),
     )
 
 

@@ -63,17 +63,18 @@ def main() -> int:
         return 1
     portfolio = json.loads(pf_path.read_text())
 
+    config = load_config(args.config)
     marks = {}
     if not args.no_marks:
         try:
-            marks = current_marks(load_config(args.config), portfolio.get("positions", {}))
+            marks = current_marks(config, portfolio.get("positions", {}))
         except Exception as exc:
             print(f"[dashboard] live marks unavailable ({exc}) — showing realized only", file=sys.stderr)
 
     snapshot = dashboard.build_snapshot(portfolio, marks)
     engine = dashboard.read_engine_state(Path(args.state_dir))
     generated = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
-    html = dashboard.render_html(snapshot, engine, generated)
+    html = dashboard.render_html(snapshot, engine, generated, title=config.name)
 
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
