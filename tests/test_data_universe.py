@@ -111,6 +111,64 @@ def test_get_source_unknown_raises():
         data.get_source("nope")
 
 
+# ── local CSV history source (WRDS / CRSP exports) ───────────────────────────
+
+def test_read_ohlcv_csv_standard_and_crsp(tmp_path):
+    std = tmp_path / "SPY.csv"
+    std.write_text("Date,Open,High,Low,Close,Volume\n2026-01-02,10,11,9,10.5,1000\n2026-01-03,10.5,12,10,11.5,1200\n")
+    df = data._read_ohlcv_csv(std)
+    assert list(df.columns) == ["open", "high", "low", "close", "volume"]
+    assert df["close"].tolist() == [10.5, 11.5]
+    assert isinstance(df.index, pd.DatetimeIndex)
+    # CRSP layout: caldt + OPENPRC/ASKHI/BIDLO/PRC (PRC negative => bid/ask midpoint) + VOL
+    crsp = tmp_path / "GSPC.csv"
+    crsp.write_text("caldt,OPENPRC,ASKHI,BIDLO,PRC,VOL\n2026-01-02,10,11,9,-10.5,1000\n")
+    c = data._read_ohlcv_csv(crsp)
+    assert c["close"].tolist() == [10.5]   # magnitude of -10.5
+    assert c["high"].tolist() == [11.0]
+
+
+def test_read_ohlcv_csv_close_only_fills_ohlc(tmp_path):
+    p = tmp_path / "X.csv"
+    p.write_text("date,close\n2026-01-02,100\n2026-01-03,101\n")
+    df = data._read_ohlcv_csv(p)
+    assert df["open"].tolist() == df["close"].tolist() == [100.0, 101.0]
+    assert (df["volume"] == 0.0).all()
+
+
+def test_csv_source_serves_daily_then_falls_back(tmp_path):
+    (tmp_path / "SPY.csv").write_text(
+        "Date,Open,High,Low,Close,Volume\n2026-01-02,10,11,9,10.5,1000\n2026-01-03,10.5,12,10,11.5,1200\n")
+    fallback = _StubSource(make_ohlcv(np.linspace(100, 110, 30), freq="D"))
+    src = data.CSVSource(tmp_path, fallback=fallback)
+    assert src.fetch("SPY", "1d")["close"].tolist() == [10.5, 11.5]   # from CSV
+    assert fallback.calls == 0
+    assert len(src.fetch("AAPL", "1d")) == 30 and fallback.calls == 1   # no CSV -> fallback
+
+
+def test_csv_source_only_intercepts_daily(tmp_path):
+    (tmp_path / "SPY.csv").write_text("Date,Close\n2026-01-02,10.5\n")
+    fallback = _StubSource(make_ohlcv(np.linspace(100, 110, 30), freq="h"))
+    data.CSVSource(tmp_path, fallback=fallback, timeframes=("1d",)).fetch("SPY", "1h")
+    assert fallback.calls == 1   # intraday -> fallback even though SPY.csv exists
+
+
+def test_csv_source_matches_caret_symbol(tmp_path):
+    (tmp_path / "GSPC.csv").write_text("Date,Close\n2026-01-02,4000\n")
+    fallback = _StubSource(make_ohlcv(np.linspace(100, 110, 5), freq="D"))
+    src = data.CSVSource(tmp_path, fallback=fallback)
+    assert src.fetch("^GSPC", "1d")["close"].tolist() == [4000.0] and fallback.calls == 0
+
+
+def test_source_from_config_uses_csv_for_history_not_live(tmp_path):
+    config = load_config("config.yaml")
+    config.data.csv_dir = str(tmp_path)
+    history = data.source_from_config(config, cache_dir=str(tmp_path / "cache"))
+    assert isinstance(history, data.CSVSource)          # search/history feed wraps CSV
+    live = data.source_from_config(config, cache_dir=None)
+    assert not isinstance(live, data.CSVSource)         # live feed stays real-time
+
+
 # ── per-instrument source routing (crypto -> Binance) ────────────────────────
 
 def test_binance_symbol_translation():

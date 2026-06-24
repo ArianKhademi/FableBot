@@ -183,6 +183,88 @@ class CachedSource:
         return df
 
 
+# Column aliases so one reader handles a plain OHLCV export and a WRDS/CRSP daily
+# file (caldt/PRC/OPENPRC/ASKHI/BIDLO/VOL) alike.
+_CSV_DATE = ("date", "caldt", "datetime", "timestamp", "time", "day")
+_CSV_FIELDS = {
+    "open": ("open", "openprc", "open_price", "o"),
+    "high": ("high", "askhi", "ask_high", "h"),
+    "low": ("low", "bidlo", "bid_low", "l"),
+    "close": ("close", "prc", "adj_close", "adjclose", "price", "c"),
+    "volume": ("volume", "vol", "v"),
+}
+
+
+def _read_ohlcv_csv(path: Path) -> pd.DataFrame:
+    """Parse a local OHLCV CSV into the normalised frame. Tolerant of header
+    casing and of the WRDS/CRSP layout (date=caldt; OHLC = OPENPRC/ASKHI/BIDLO/
+    PRC, where CRSP stores PRC negative when it's a bid/ask midpoint, so we take
+    the magnitude). Missing OHLC columns are filled from close so a close-only
+    export still backtests; missing volume becomes 0."""
+    raw = pd.read_csv(path)
+    raw.columns = [str(c).strip().lower() for c in raw.columns]
+    date_col = next((c for c in _CSV_DATE if c in raw.columns), None)
+    if date_col is not None:
+        raw.index = pd.to_datetime(raw[date_col], errors="coerce")
+    else:  # assume the first column is the (unnamed) date index
+        raw = pd.read_csv(path, index_col=0, parse_dates=True)
+        raw.columns = [str(c).strip().lower() for c in raw.columns]
+    out: dict[str, pd.Series] = {}
+    for field, aliases in _CSV_FIELDS.items():
+        col = next((a for a in aliases if a in raw.columns), None)
+        if col is not None:
+            out[field] = pd.to_numeric(raw[col], errors="coerce")
+    if "close" not in out:
+        raise ValueError(f"{path}: no close/PRC column found among {list(raw.columns)}")
+    df = pd.DataFrame(out, index=raw.index)
+    for f in ("open", "high", "low", "close"):
+        if f in df:
+            df[f] = df[f].abs()  # CRSP negative-PRC convention
+    for f in ("open", "high", "low"):
+        if f not in df:
+            df[f] = df["close"]
+    if "volume" not in df:
+        df["volume"] = 0.0
+    return df[["open", "high", "low", "close", "volume"]].dropna(subset=["close"]).sort_index()
+
+
+class CSVSource:
+    """Serve OHLCV from local CSVs (e.g. a WRDS/CRSP daily export) for the
+    history/search feed — clean, deep, reproducible data. Only intercepts the
+    timeframes it covers (daily by default) and only symbols with a matching CSV;
+    everything else (intraday, missing symbols, a malformed file) falls through to
+    ``fallback``, so the live feed and non-daily instruments are untouched.
+
+    Files are looked up by symbol under ``data_dir`` — ``SPY.csv``, with ``^GSPC``
+    also matching ``GSPC.csv``. ``days`` is ignored: the CSV *is* the deep history,
+    and the search's own split decides how much to use."""
+
+    def __init__(self, data_dir: Path | str, fallback: "OHLCVSource", timeframes=("1d",)):
+        self.data_dir = Path(data_dir)
+        self.fallback = fallback
+        self.timeframes = set(timeframes)
+
+    def _path(self, symbol: str) -> Optional[Path]:
+        sanitized = "".join(c if c.isalnum() else "_" for c in symbol)
+        for name in (symbol, symbol.lstrip("^"), symbol.upper(), symbol.lstrip("^").upper(), sanitized):
+            p = self.data_dir / f"{name}.csv"
+            if p.exists():
+                return p
+        return None
+
+    def fetch(self, symbol: str, timeframe: str, days: Optional[int] = None) -> pd.DataFrame:
+        if timeframe in self.timeframes:
+            path = self._path(symbol)
+            if path is not None:
+                try:
+                    df = _read_ohlcv_csv(path)
+                    if not df.empty:
+                        return df
+                except Exception:
+                    pass  # malformed local file must not break the run — use the live source
+        return self.fallback.fetch(symbol, timeframe, days)
+
+
 _SOURCES = {"yfinance": YFinanceSource, "stooq": StooqSource, "binance": BinanceSource}
 
 
@@ -237,7 +319,15 @@ def source_from_config(config, cache_dir: Optional[Path | str] = None, instrumen
         for inst in instruments
         if getattr(inst, "source", None) and inst.source != config.data.source
     }
-    return RoutingSource(default, routes) if routes else default
+    source: OHLCVSource = RoutingSource(default, routes) if routes else default
+
+    # Local CSVs (e.g. a WRDS/CRSP export) feed the *history/search* path only —
+    # not the live feed (cache_dir is None there, which must stay real-time). A
+    # symbol without a CSV falls through to the routed live/cached source above.
+    csv_dir = getattr(config.data, "csv_dir", None)
+    if csv_dir and cache_dir is not None:
+        source = CSVSource(csv_dir, fallback=source)
+    return source
 
 
 def fetch_ohlcv(symbol: str, timeframe: str, days: int | None = None) -> pd.DataFrame:

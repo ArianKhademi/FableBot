@@ -62,6 +62,10 @@ class DataConfig:
     source: str = "yfinance"
     cache_dir: str | None = None
     cache_ttl_minutes: float = 1440.0
+    # Optional folder of local daily CSVs (e.g. a WRDS/CRSP export) used for the
+    # *history/search* feed only — clean, deep, reproducible backtest data. Any
+    # symbol without a matching CSV (and the live feed) falls back to ``source``.
+    csv_dir: str | None = None
 
 
 @dataclass
