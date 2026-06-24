@@ -31,8 +31,8 @@ better while you sleep.
 
 | Instrument | Symbol    | Strategy           | Timeframe | Why |
 |------------|-----------|--------------------|-----------|-----|
-| S&P 500    | `^GSPC`   | Mean reversion     | 1-day     | Daily "buy the dip": fade 2σ stretches from the 20-day mean. (Moved off 15m, where the Sharpe was noise-dominated.) |
-| Nasdaq     | `^IXIC`   | Mean reversion     | 15-min    | Same regime as the S&P: stretch, snap back. |
+| S&P 500    | `^GSPC`   | Mean reversion     | 15-min    | Indices make small overextensions every few hours — fade them back to the mean. |
+| Nasdaq     | `^IXIC`   | Mean reversion     | 1-day     | Same regime as the S&P: stretch from the 20-day mean, snap back. |
 | Bitcoin    | `BTC-USD` | Momentum breakout  | 1-hour    | Crypto trends harder than indices — ride the move instead of fading it. |
 | Gold       | `GC=F`    | Trend following    | 4-hour    | Commodities move in cleaner waves; the slow timeframe filters intraday whipsaws. |
 | Oil        | `CL=F`    | Trend following    | 4-hour    | Same wave structure as gold. |
