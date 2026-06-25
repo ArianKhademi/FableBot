@@ -106,11 +106,14 @@ def run_backtest(
             )
             opened_this_bar = True
 
-        if strategy.trail_atr_mult and instrument in broker.positions and not opened_this_bar:
-            broker.trail_stop(
-                instrument, float(bar["high"]), float(bar["low"]),
-                signal.atr, strategy.trail_atr_mult,
-            )
+        pos = broker.positions.get(instrument)
+        if pos is not None and not opened_this_bar:
+            trail_mult = strategy.current_trail_mult(window, pos.direction)
+            if trail_mult:
+                broker.trail_stop(
+                    instrument, float(bar["high"]), float(bar["low"]),
+                    signal.atr, trail_mult,
+                )
         equity_curve.append(broker.total_equity({instrument: close}))
 
     # liquidate at the final close so the result reflects everything
