@@ -31,14 +31,17 @@ better while you sleep.
 
 | Instrument | Symbol    | Strategy           | Timeframe | Why |
 |------------|-----------|--------------------|-----------|-----|
-| S&P 500    | `^GSPC`   | Mean reversion     | 15-min    | Indices make small overextensions every few hours — fade them back to the mean. |
+| S&P 500    | `^GSPC`   | Mean reversion     | 1-day     | Buy the daily dip: fade 2σ stretches from the 20-day mean. |
 | Nasdaq     | `^IXIC`   | Mean reversion     | 1-day     | Same regime as the S&P: stretch from the 20-day mean, snap back. |
 | Bitcoin    | `BTC-USD` | Momentum breakout  | 1-hour    | Crypto trends harder than indices — ride the move instead of fading it. |
 | Gold       | `GC=F`    | Trend following    | 4-hour    | Commodities move in cleaner waves; the slow timeframe filters intraday whipsaws. |
 | Oil        | `CL=F`    | Trend following    | 4-hour    | Same wave structure as gold. |
 
-The instrument list is the *starting* set, not a hard limit — it's
-config-driven, and expanding the universe is on the roadmap (see below).
+The instrument list is the *starting* set, not a hard limit — it's config-driven,
+and the search continuously scans a much wider universe. Four named strategies
+ship (`mean_reversion`, `momentum_breakout`, `trend_following`, and **`regime`** —
+an ADX switch that mean-reverts in chop and rides momentum in trends), and a
+composable-DSL `genome` or a live `model` can replace any of them per instrument.
 
 ### Mean reversion (S&P 500, Nasdaq)
 
@@ -68,10 +71,13 @@ position flipped on the opposite signal. Slow by design.
   that hitting it loses exactly the per-trade risk budget. On top of that,
   the broker force-closes any position whose unrealized loss reaches the risk
   budget (covers gaps past the stop). There is no "let me give it room."
-- **Trailing stops on trend trades.** Bitcoin, gold, and oil ratchet their
-  stop an ATR multiple behind price as the move works (`trail_atr_mult` in
-  config), converting open profit into locked-in profit. Stops only ever
-  tighten — widening is constitutionally impossible.
+- **Trailing stops (constant or adaptive).** Any strategy can ratchet its stop
+  an ATR multiple behind price as the move works (`trail_atr_mult`), converting
+  open profit into locked-in profit. Mean-reversion can also use an **adaptive**
+  trail (`trail_near_mult`) that starts loose far from the mean and tightens as
+  price nears it. Stops only ever tighten — widening is constitutionally
+  impossible, so a dynamic multiple can't loosen a stop, only change how far
+  behind price the next candidate sits.
 - **Correlation filter.** S&P, Nasdaq, and Bitcoin are tagged `risk_on`. If
   two of them are already long, the bot will not open a third long in the
   group — that would double the real exposure, not diversify it.
@@ -93,6 +99,44 @@ not by the optimizer, not by the nightly reviewer.
 Reports print to the console, are archived under `reports/`, and are POSTed to a
 webhook if `FABLEBOT_WEBHOOK_URL` is set (works with Slack/Discord-style JSON
 webhooks).
+
+## Dashboards
+
+A self-contained, read-only HTML dashboard makes the account glanceable in a
+browser instead of the terminal — KPIs (equity, return %, realized + **live**
+unrealized P&L, win rate), an equity curve, open positions with live marks and
+stops, full trade history, per-strategy/instrument breakdowns, and an engine
+panel (genome-search progress, the proposal pipeline, cron heartbeats). It is
+**read-only** — generating or viewing it can never touch trading state.
+
+- The live bot **regenerates its own dashboard every cycle** from the marks it
+  already computed (no extra fetch), so `state/dashboard.html` is always current.
+- Generate/refresh on demand: `python3 scripts/dashboard.py --state-dir state --open`.
+- One **combined** page across all books: `python3 scripts/dashboard_all.py --open`
+  — a comparison table plus their equity curves overlaid.
+
+Each book's heading is its config `name`, so several bots are easy to tell apart.
+
+## Multiple books (live experiments)
+
+`run_bot.py --state-dir <dir>` runs a **second, fully independent** paper account
+— its own config, state, journal, and dashboard — without touching the main one.
+That makes head-to-head A/B testing trivial: same instruments, one variable
+changed, compared on separate dashboards. The bundled experiment configs:
+
+| Book | Config | State dir | Question |
+|---|---|---|---|
+| Main (live) | `config.yaml` | `state/` | the real book |
+| 15m MR | `config_experiment.yaml` | `state_experiment` | does mean-reversion generalize across ETFs? |
+| 15m MR + trail | `config_experiment_trail.yaml` | `state_experiment_trail` | does a (constant) trailing stop help? |
+| Regime (ADX) | `config_experiment_regime.yaml` | `state_experiment_regime` | does switching beat either strategy alone? |
+| 15m MR + adaptive trail | `config_experiment_adaptive.yaml` | `state_experiment_adaptive` | does *narrowing* the trail near the mean beat a constant one? |
+
+```bash
+python3 scripts/run_bot.py --config config_experiment_trail.yaml --state-dir state_experiment_trail
+```
+They run simultaneously (separate state dirs, no collision) and each is light
+(polls every few minutes).
 
 ## The learning loop
 
@@ -219,8 +263,12 @@ can be proposed. Full brief: [`docs/phase-2-learning-engine.md`](docs/phase-2-le
   --universe`) — scan many equities/ETFs/crypto; a liquidity screener ranks them.
   Combined with the DSL, the search discovers *which symbols are worth trading*.
 - **Pluggable data** (`fablebot/data.py`) — an `OHLCVSource` interface
-  (yfinance / Stooq deep-daily / Binance deep-intraday) behind an on-disk cache;
-  swapping feeds is a config change.
+  (yfinance / Stooq deep-daily / Binance deep-intraday) behind an on-disk cache,
+  with per-instrument routing; swapping feeds is a config change. A `CSVSource`
+  feeds the *search* clean local daily history (e.g. a WRDS/CRSP export) via
+  `data.csv_dir`, while the live feed stays real-time — see
+  [`docs/wrds-data.md`](docs/wrds-data.md). `scripts/ingest_wrds.py` streams a
+  multi-GB CRSP export into per-symbol, split-adjusted CSVs.
 - **Transaction costs** (`config.yaml: costs.friction_bps`) — commission +
   slippage applied to every fill during the search, so the gate can't certify a
   frictionless-only edge.
@@ -343,6 +391,15 @@ reviewer) edits `config.yaml`.
 ```bash
 python3 scripts/engine_status.py     # is it learning? what's cleared the gate?
 python3 scripts/proposals.py         # the numeric pipeline + shipping slate
+python3 scripts/dashboard_all.py --open   # every book on one page
+```
+
+**Analysis & tuning tools (read-only evidence):**
+```bash
+python3 scripts/premature_stops.py             # did hard stops cut trades that came back?
+python3 scripts/stop_sweep.py --instrument BTC # grid the hard × trailing stop; recommend a width
+python3 scripts/stop_sweep.py --instrument SPY --near 1,1.5,2.5   # + tune the adaptive MR trail
+python3 scripts/genome_insights.py             # what indicators/structures recur in the best genomes
 ```
 
 Nothing above edits `config.yaml` or the live book — every pipeline only
@@ -431,28 +488,41 @@ fablebot/
 ├── ml.py             # gradient-boosted-tree signal models
 ├── rl.py             # constrained Q-learning agent
 ├── universe.py       # universe screening (liquidity)
+├── rotation.py       # P&L-aware live-book rotation policy (pure)
+├── dashboard.py      # read-only HTML dashboard (per-book + combined)
 └── strategies/
-    ├── base.py
-    ├── mean_reversion.py
+    ├── base.py            # + current_trail_mult hook (constant / dynamic)
+    ├── mean_reversion.py  # + adaptive narrowing trail
     ├── momentum_breakout.py
-    └── trend_following.py
+    ├── trend_following.py
+    └── regime.py          # ADX switch: mean-revert in chop, momentum in trends
 
 scripts/
-├── run_bot.py          # live loop / on-demand reports
+├── run_bot.py          # live loop / on-demand reports (--state-dir for extra books)
+├── run_engine.py       # unified orchestrator (numeric + genome search, --universe)
 ├── backtest.py         # single-instrument backtest
 ├── analyze.py          # journal → performance digest
-├── optimize_loop.py    # continuous numeric optimizer (--workers, --no-throttle)
-├── evolve.py           # evolutionary genome search (--universe)
-├── train_ml.py         # train + gate ML signal models
-├── run_engine.py       # unified orchestrator (optimizer + genome search)
 ├── proposals.py        # pipeline + funnel + shipping slate, status transitions
 ├── validate.py         # tests + per-instrument backtests (the PR gate)
+├── engine_status.py    # is the search learning? what's cleared the gate?
+├── evolve.py           # evolutionary genome search (--universe)
+├── train_ml.py / train_rl.py   # train + gate ML / RL models
+├── rotate_universe.py  # P&L-aware live-book rotation recommendation
+├── dashboard.py / dashboard_all.py   # per-book + combined dashboards
+├── premature_stops.py  # were hard stops cutting trades that recovered?
+├── stop_sweep.py       # grid the hard × trailing (× adaptive) stop, recommend a width
+├── genome_insights.py  # cross-instrument: what recurs in the best genomes
+├── ingest_wrds.py      # stream a CRSP export → per-symbol adjusted CSVs
+├── position_flat.py / promote_when_flat.sh   # gate a config change on a position closing
 └── nightly_review.sh   # headless Claude Code review → draft PR
 
+config.yaml, config_experiment*.yaml   # the main book + experiment books
 prompts/reviewer.md     # the reviewer's constitution
 RISK_RULES.md           # the immutable risk constitution
-docs/learning-loop.md   # full design of the self-improvement loop
+docs/learning-loop.md            # full design of the self-improvement loop
 docs/phase-2-learning-engine.md  # the strategy-engine brief
+docs/wrds-data.md                # using a WRDS/CRSP export for the search
+docs/PROJECT_OVERVIEW.md         # in-depth: everything built + next steps + testing phases
 ```
 
 ## Roadmap
