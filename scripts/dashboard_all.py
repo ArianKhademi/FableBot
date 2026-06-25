@@ -11,6 +11,7 @@ touching the per-book dashboards (which keep updating on their own).
 
 import argparse
 import json
+import os
 import subprocess
 import sys
 from datetime import datetime, timezone
@@ -60,6 +61,7 @@ def main() -> int:
 
     # Every state dir with a matching config — even a fresh book that hasn't
     # traded yet (no portfolio.json until its first fill); show it at its start.
+    out = Path(args.out)
     state_dirs = sorted(p for p in ROOT.glob("state*") if p.is_dir() and _config_for(p).exists())
     books = []
     for sd in state_dirs:
@@ -75,14 +77,17 @@ def main() -> int:
                          "realized_pnl": 0.0, "positions": {}, "trades": []}
         marks = {} if args.no_marks else _marks(cfg, portfolio.get("positions", {}))
         snap = dashboard.build_snapshot(portfolio, marks)
-        books.append({"name": cfg.name, "account": snap["account"], "stats": snap["stats"],
-                      "equity_curve": snap["equity_curve"]})
+        # Link the book's row to its own dashboard.html (the live bot / dashboard.py
+        # writes one per state dir), as a path relative to this combined page.
+        dash = sd / "dashboard.html"
+        href = os.path.relpath(dash, out.parent) if dash.exists() else None
+        books.append({"name": cfg.name, "href": href, "account": snap["account"],
+                      "stats": snap["stats"], "equity_curve": snap["equity_curve"]})
 
     if not books:
         print("No books found (no state*/portfolio.json yet). Start a bot first.", file=sys.stderr)
         return 1
     generated = datetime.now(timezone.utc).astimezone().strftime("%Y-%m-%d %H:%M")
-    out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(dashboard.render_overview(books, generated))
     print(f"[dashboard] wrote {out}  ({len(books)} books: {', '.join(b['name'] for b in books)})")

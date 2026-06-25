@@ -323,8 +323,15 @@ def render_overview(books: list, generated_at: str, refresh_secs: int = 150) -> 
     ``name``, ``account`` (account_summary), ``stats`` (trade_stats), and
     ``equity_curve``. Lets you watch all the bots without opening each separately."""
     cls = lambda v: "pos" if v > 0 else ("neg" if v < 0 else "")
+    # A book whose own dashboard.html exists gets a clickable name that opens it;
+    # otherwise the name is plain text (e.g. a fresh book that hasn't rendered one).
+    name_cell = lambda b: (
+        f'<a href="{b["href"]}" style="color:inherit;text-decoration:underline" '
+        f'title="Open this book’s dashboard">{b["name"]}</a>'
+        if b.get("href") else b["name"]
+    )
     rows = "".join(
-        f'<tr><td>{b["name"]}</td>'
+        f'<tr><td>{name_cell(b)}</td>'
         f'<td class="r">{_money(b["account"]["total_equity"])}</td>'
         f'<td class="r {cls(b["account"]["return_pct"])}">{b["account"]["return_pct"]:+.1f}%</td>'
         f'<td class="r {cls(b["account"]["realized_pnl"])}">{_money(b["account"]["realized_pnl"])}</td>'

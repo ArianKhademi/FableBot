@@ -27,3 +27,16 @@ def test_render_overview_lists_every_book():
 def test_render_overview_handles_no_books():
     html = dashboard.render_overview([], "now")
     assert "no books found" in html
+
+
+def test_render_overview_links_books_with_href():
+    """A book carrying an ``href`` renders its name as a clickable link to its own
+    dashboard; a book without one stays plain text."""
+    linked = _book("Adaptive", 100.0, [])
+    linked["href"] = "../state_experiment_adaptive/dashboard.html"
+    plain = _book("Fresh", 0.0, [])  # no href (e.g. never rendered its own page)
+    html = dashboard.render_overview([linked, plain], "now")
+    assert '<a href="../state_experiment_adaptive/dashboard.html"' in html
+    assert ">Adaptive</a>" in html
+    # The hrefless book is listed but not wrapped in a link.
+    assert "Fresh" in html and ">Fresh</a>" not in html
