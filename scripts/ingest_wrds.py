@@ -24,13 +24,14 @@ ROOT = Path(__file__).resolve().parent.parent
 # Case-insensitive column aliases — covers CRSP's legacy and CIZ (v2) schemas.
 _ALIASES = {
     "ticker": ("ticker", "htick", "hticker", "ticker_x"),
-    "date":   ("date", "caldt", "dlycaldt", "mthcaldt", "datadate", "dlydate"),
+    "date":   ("dlycaldt", "date", "caldt", "mthcaldt", "datadate", "dlydate"),
     "open":   ("openprc", "dlyopen", "open"),
     "high":   ("askhi", "dlyhigh", "high"),
     "low":    ("bidlo", "dlylow", "low"),
     "close":  ("prc", "dlyprc", "dlyclose", "close"),
     "volume": ("vol", "dlyvol", "volume"),
-    "adj":    ("cfacpr", "dlyfacpr", "dlycfacpr"),  # cumulative price adjustment factor
+    # cumulative price-adjustment factor: CIZ is DlyFacPrc, legacy is CFACPR.
+    "adj":    ("cfacpr", "dlyfacprc", "dlyfacpr", "dlycfacpr"),
 }
 
 
