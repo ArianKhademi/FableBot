@@ -314,6 +314,71 @@ def render_html(snapshot: dict, engine: dict, generated_at: str, refresh_secs: i
     )
 
 
+_OVERVIEW_COLORS = ["#378ADD", "#1D9E75", "#D85A30", "#7F77DD", "#BA7517", "#D4537E"]
+
+
+def render_overview(books: list, generated_at: str, refresh_secs: int = 150) -> str:
+    """A single page comparing several books side by side — one row per book plus
+    an overlay of their equity trajectories. ``books`` is a list of dicts with
+    ``name``, ``account`` (account_summary), ``stats`` (trade_stats), and
+    ``equity_curve``. Lets you watch all the bots without opening each separately."""
+    cls = lambda v: "pos" if v > 0 else ("neg" if v < 0 else "")
+    rows = "".join(
+        f'<tr><td>{b["name"]}</td>'
+        f'<td class="r">{_money(b["account"]["total_equity"])}</td>'
+        f'<td class="r {cls(b["account"]["return_pct"])}">{b["account"]["return_pct"]:+.1f}%</td>'
+        f'<td class="r {cls(b["account"]["realized_pnl"])}">{_money(b["account"]["realized_pnl"])}</td>'
+        f'<td class="r {cls(b["account"]["unrealized_pnl"])}">{_money(b["account"]["unrealized_pnl"])}</td>'
+        f'<td class="r">{b["stats"]["win_rate"]:.0f}%</td>'
+        f'<td class="r">{b["stats"]["count"]}</td>'
+        f'<td class="r">{b["account"]["open_count"]}</td></tr>'
+        for b in books
+    ) or '<tr><td colspan="8" class="muted">no books found — start a bot first</td></tr>'
+
+    data = json.dumps([{"name": b["name"], "eq": [p["equity"] for p in b["equity_curve"]],
+                        "color": _OVERVIEW_COLORS[i % len(_OVERVIEW_COLORS)]}
+                       for i, b in enumerate(books)])
+    legend = "".join(
+        f'<span style="display:flex;align-items:center;gap:5px;font-size:12px;color:var(--mut)">'
+        f'<span style="width:10px;height:10px;border-radius:2px;background:{_OVERVIEW_COLORS[i % len(_OVERVIEW_COLORS)]}"></span>'
+        f'{b["name"]}</span>'
+        for i, b in enumerate(books)
+    )
+    return (
+        "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
+        "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+        f"<meta http-equiv=\"refresh\" content=\"{int(refresh_secs)}\">"
+        "<title>FableBot — all books</title><style>" + _CSS + "</style></head><body><div class=\"wrap\">"
+        f"<header><h1>FableBot — all books</h1><span class=\"muted\">updated {generated_at} · "
+        f"auto-refresh {int(refresh_secs)}s · paper trading</span></header>"
+        "<table><thead><tr><th>Book</th><th class=\"r\">Equity</th><th class=\"r\">Return</th>"
+        "<th class=\"r\">Realized</th><th class=\"r\">Unrealized</th><th class=\"r\">Win%</th>"
+        f"<th class=\"r\">Trades</th><th class=\"r\">Open</th></tr></thead><tbody>{rows}</tbody></table>"
+        "<h2>Equity by closed-trade #</h2>"
+        f"<div style=\"display:flex;flex-wrap:wrap;gap:14px;margin-bottom:6px\">{legend}</div>"
+        "<div class=\"chartbox\"><canvas id=\"eq\" role=\"img\" aria-label=\"Equity trajectories by book\">"
+        "Equity trajectories per book.</canvas></div>"
+        "<footer class=\"muted\">Read-only. Each book is an independent paper account.</footer></div>"
+        "<script src=\"https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js\"></script>"
+        f"<script>const B={data};</script><script>{_OVERVIEW_JS}</script>"
+        "</body></html>"
+    )
+
+
+_OVERVIEW_JS = """
+const dark=matchMedia('(prefers-color-scheme:dark)').matches;
+const ink=dark?'#9a988f':'#6b6a64', grid=dark?'#36352f':'#e7e5dd';
+const maxlen=Math.max(0,...B.map(b=>b.eq.length));
+new Chart(document.getElementById('eq'),{type:'line',
+ data:{labels:Array.from({length:maxlen},(_,i)=>i+1),
+  datasets:B.map(b=>({label:b.name,data:b.eq,borderColor:b.color,backgroundColor:'transparent',
+   tension:0.2,pointRadius:0,borderWidth:2,spanGaps:true}))},
+ options:{responsive:true,maintainAspectRatio:false,plugins:{legend:{display:false}},
+  scales:{x:{ticks:{color:ink,maxTicksLimit:10},grid:{display:false}},
+   y:{ticks:{color:ink,callback:v=>'$'+(v/1000).toFixed(0)+'k'},grid:{color:grid}}}}});
+"""
+
+
 _CSS = """
 :root{--bg:#fbfaf7;--card:#fff;--ink:#1c1c1a;--mut:#6b6a64;--line:#e7e5dd;--pos:#1d8a5e;--neg:#cf3d3d}
 @media(prefers-color-scheme:dark){:root{--bg:#1a1a18;--card:#232320;--ink:#ecece6;--mut:#9a988f;--line:#36352f;--pos:#4cc28a;--neg:#e86a6a}}
