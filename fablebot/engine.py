@@ -190,8 +190,10 @@ class TradingEngine:
         # Trailing stop: ratchet toward price on every bar after the entry
         # bar (trailing against the entry bar itself would re-tighten the
         # freshly placed stop). Only ever tightens — see Position.trail.
-        if strategy.trail_atr_mult and key in self.broker.positions and not opened_this_cycle:
-            if self.broker.trail_stop(key, high, low, signal.atr, strategy.trail_atr_mult):
+        position = self.broker.positions.get(key)
+        if position is not None and not opened_this_cycle:
+            trail_mult = strategy.current_trail_mult(df, position.direction)
+            if trail_mult and self.broker.trail_stop(key, high, low, signal.atr, trail_mult):
                 new_stop = self.broker.positions[key].stop_price
                 log.append(f"{key}: stop trailed to {new_stop:,.2f}" + self._acct())
                 journal("trail", f"stop trailed to {new_stop:,.2f}")
@@ -236,10 +238,12 @@ class TradingEngine:
             trade = self.shadow.close_position(key, close, signal.reason)
             log.append(f"{key}: shadow trade closed {trade.pnl:+,.2f} (would-have-been)")
             self.journal.record_trade(trade, shadow=True)
-        elif strategy.trail_atr_mult:
-            # Shadow trades trail too, or the counterfactual would flatter
-            # whichever book didn't.
-            self.shadow.trail_stop(key, high, low, signal.atr, strategy.trail_atr_mult)
+        else:
+            # Shadow trades trail too (with the same dynamic multiple), or the
+            # counterfactual would flatter whichever book didn't.
+            trail_mult = strategy.current_trail_mult(df, direction)
+            if trail_mult:
+                self.shadow.trail_stop(key, high, low, signal.atr, trail_mult)
 
     def _acct(self) -> str:
         """Compact account state, appended to trade-event log lines so the

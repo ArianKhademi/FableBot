@@ -25,12 +25,34 @@ class MeanReversion(Strategy):
         self.lookback = int(self.params.get("lookback", 20))
         self.entry_z = float(self.params.get("entry_z", 2.0))
         self.exit_z = float(self.params.get("exit_z", 0.5))
+        # Optional adaptive trailing stop: the trail tightens from trail_atr_mult
+        # (loose, at entry, far from the mean) to trail_near_mult (tight, as price
+        # nears the mean). Unset => the trail is constant (or absent if no
+        # trail_atr_mult). See current_trail_mult.
+        near = self.params.get("trail_near_mult")
+        self.trail_near_mult = float(near) if near is not None else None
 
     def min_bars(self) -> int:
         return max(self.lookback, self.atr_period) + 1
 
     def _z(self, df: pd.DataFrame) -> float:
         return float(zscore(df["close"], self.lookback).iloc[-1])
+
+    def current_trail_mult(self, df: pd.DataFrame, position_direction: Optional[str]) -> Optional[float]:
+        """Narrowing trail: loose far from the mean so the reversion has room,
+        tightening toward ``trail_near_mult`` as |z| falls toward ``exit_z`` (near
+        the target, where giving back the gain to a bounce-away hurts most).
+        Linearly interpolates on |z| between entry_z (loose) and exit_z (tight);
+        without trail_near_mult it's the constant trail."""
+        if not self.trail_atr_mult or self.trail_near_mult is None:
+            return self.trail_atr_mult
+        z = abs(self._z(df))
+        if math.isnan(z):
+            return self.trail_atr_mult
+        span = self.entry_z - self.exit_z
+        progress = 1.0 if span <= 0 else (self.entry_z - z) / span
+        progress = max(0.0, min(1.0, progress))   # 0 at entry_z (far), 1 at exit_z (near)
+        return self.trail_atr_mult + progress * (self.trail_near_mult - self.trail_atr_mult)
 
     def evaluate(self, df: pd.DataFrame, position_direction: Optional[str]) -> Signal:
         z = self._z(df)

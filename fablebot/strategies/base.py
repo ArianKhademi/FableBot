@@ -62,6 +62,14 @@ class Strategy:
     def current_atr(self, df: pd.DataFrame) -> float:
         return float(atr(df, self.atr_period).iloc[-1])
 
+    def current_trail_mult(self, df: pd.DataFrame, position_direction: Optional[str]) -> Optional[float]:
+        """The trailing-stop ATR multiple to apply *this bar* — the constant
+        ``trail_atr_mult`` by default (None = no trailing). A strategy can override
+        to vary it per bar (mean-reversion narrows it as price nears the mean). The
+        broker still only ever tightens the stop, so a dynamic multiple can't widen
+        it — it only changes how far behind price the next candidate stop sits."""
+        return self.trail_atr_mult
+
     def evaluate(self, df: pd.DataFrame, position_direction: Optional[str]) -> Signal:
         """``position_direction`` is 'long', 'short', or None when flat."""
         raise NotImplementedError
