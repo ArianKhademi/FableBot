@@ -9,6 +9,8 @@
 # does over time. Same immutable risk engine (1% stop, ATR sizing, correlation
 # filter). The main book is left exactly as it is.
 
+name: "Experiment — 15m mean-reversion"
+
 account:
   starting_equity: 100000.0
   risk_per_trade: 0.01

@@ -218,7 +218,8 @@ def _money(v: float) -> str:
     return ("-$" if v < 0 else "$") + f"{abs(v):,.0f}"
 
 
-def render_html(snapshot: dict, engine: dict, generated_at: str, refresh_secs: int = 150) -> str:
+def render_html(snapshot: dict, engine: dict, generated_at: str, refresh_secs: int = 150,
+                title: str = "FableBot") -> str:
     """Assemble the self-contained dashboard page. ``snapshot`` carries the
     account summary, marked positions, trade stats, equity curve, and breakdowns;
     ``engine`` is read_engine_state's output. Returns a full HTML document — a
@@ -286,9 +287,9 @@ def render_html(snapshot: dict, engine: dict, generated_at: str, refresh_secs: i
         "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"utf-8\">"
         "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
         f"<meta http-equiv=\"refresh\" content=\"{int(refresh_secs)}\">"
-        "<title>FableBot dashboard</title>"
+        f"<title>{title} dashboard</title>"
         "<style>" + _CSS + "</style></head><body><div class=\"wrap\">"
-        f"<header><h1>FableBot</h1><span class=\"muted\">updated {generated_at} · auto-refresh {int(refresh_secs)}s · paper trading</span></header>"
+        f"<header><h1>{title}</h1><span class=\"muted\">updated {generated_at} · auto-refresh {int(refresh_secs)}s · paper trading</span></header>"
         f"<section class=\"kpis\">{kpi_html}</section>"
         "<h2>Equity curve</h2><div class=\"chartbox\"><canvas id=\"eq\"></canvas></div>"
         "<div class=\"cols\">"

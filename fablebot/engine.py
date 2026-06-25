@@ -273,7 +273,7 @@ class TradingEngine:
             engine_state = dashboard.read_engine_state(Path(path).parent)
             ts = datetime.now(ZoneInfo(self.config.schedule.timezone)).strftime("%Y-%m-%d %H:%M")
             (Path(path).parent / "dashboard.html").write_text(
-                dashboard.render_html(snapshot, engine_state, ts)
+                dashboard.render_html(snapshot, engine_state, ts, title=self.config.name)
             )
         except Exception as exc:
             print(f"[dashboard] regen skipped ({type(exc).__name__}: {exc})", flush=True)
