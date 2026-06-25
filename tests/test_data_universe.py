@@ -193,10 +193,14 @@ def test_source_from_config_routes_crypto_to_binance():
     assert isinstance(live, data.RoutingSource)
     assert isinstance(live.routes["BTC-USD"], data.BinanceSource)
     assert isinstance(live.default, data.YFinanceSource)
-    # cached (history feed): routed backends are wrapped in the on-disk cache
+    # cached (history feed): routed backends are wrapped in the on-disk cache.
+    # When config.data.csv_dir is set, the whole cached feed is further wrapped in
+    # a CSVSource (history-only); the routing is then its fallback. Unwrap it so the
+    # assertion holds whether or not a local CSV history is configured.
     cached = data.source_from_config(config, cache_dir="state/data_cache")
-    assert isinstance(cached.routes["BTC-USD"], data.CachedSource)
-    assert isinstance(cached.routes["BTC-USD"].source, data.BinanceSource)
+    routing = cached.fallback if isinstance(cached, data.CSVSource) else cached
+    assert isinstance(routing.routes["BTC-USD"], data.CachedSource)
+    assert isinstance(routing.routes["BTC-USD"].source, data.BinanceSource)
 
 
 # ── universe config + screener ───────────────────────────────────────────────
