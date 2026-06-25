@@ -38,13 +38,21 @@ costs:
 
 # trail_atr_mult = loose trail at entry (far from mean); trail_near_mult = tight
 # trail at the target (near the mean). The trail interpolates between them on |z|.
+#
+# trail_near_mult per instrument: a stop-sweep (scripts/stop_sweep.py --near) found
+# SPY and IWM clearly prefer a GENTLE taper (near 2.5 / 2.0) with strong OOS Sharpe,
+# so they're set there as forward tests. The other three stay at 1.0: DIA's sweep
+# preferred an aggressive taper while QQQ/XLK showed no edge at any near, so there's
+# no consistent signal to fit — leave them and let live results (or the gated search,
+# which already bounds trail_near_mult) decide. These are single-split fits being
+# forward-tested, NOT validated settings.
 instruments:
   SPY:
     symbol: "SPY"
     name: "S&P 500 ETF"
     strategy: mean_reversion
     timeframe: "15m"
-    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 4.0, trail_near_mult: 1.0}
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 4.0, trail_near_mult: 2.5}  # near 2.5: stop-sweep optimum (single-split fit, forward-testing)
     param_bounds: {atr_stop_mult: [1.5, 3.5], trail_atr_mult: [2.0, 6.0], trail_near_mult: [0.5, 2.5]}
 
   QQQ:
@@ -60,7 +68,7 @@ instruments:
     name: "Russell 2000 ETF"
     strategy: mean_reversion
     timeframe: "15m"
-    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 4.0, trail_near_mult: 1.0}
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 4.0, trail_near_mult: 2.0}  # near 2.0: stop-sweep optimum (single-split fit, forward-testing)
     param_bounds: {atr_stop_mult: [1.5, 3.5], trail_atr_mult: [2.0, 6.0], trail_near_mult: [0.5, 2.5]}
 
   DIA:
