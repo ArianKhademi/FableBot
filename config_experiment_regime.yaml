@@ -1,0 +1,84 @@
+# Experiment book #4 — the regime switch. Each bar it checks ADX (trend strength)
+# and mean-reverts when the market is range-bound (ADX < adx_threshold) or rides
+# momentum when it's trending (ADX >= adx_threshold). This is the direct mitigation
+# for "mean-reversion is dangerous in strong trends": it stops fading once a trend
+# asserts itself. Fresh $100k, same immutable risk engine.
+#
+#   python3 scripts/run_bot.py --config config_experiment_regime.yaml --state-dir state_experiment_regime
+#
+# Runs on 1h bars — long enough for ADX to read the regime cleanly without 15m noise.
+
+name: "Experiment — regime switch (ADX)"
+
+account:
+  starting_equity: 100000.0
+  risk_per_trade: 0.01
+
+schedule:
+  timezone: "America/New_York"
+  morning_report: "07:00"
+  evening_report: "21:00"
+  poll_interval_minutes: 5
+
+correlation:
+  groups:
+    equity: [SPY, QQQ, IWM, DIA, XLK]
+  max_same_direction_per_group: 2
+
+data:
+  source: yfinance
+  cache_dir: state_experiment_regime/data_cache
+  cache_ttl_minutes: 1440
+
+costs:
+  friction_bps: 3.0
+
+# One params block configures both sub-strategies: lookback/entry_z/exit_z for the
+# mean-reversion (range) side, entry_channel/exit_channel for the momentum (trend)
+# side, and adx_period/adx_threshold for the switch itself (25 is the classic ADX
+# trend cutoff). trail_atr_mult trails the momentum side as it rides a trend.
+instruments:
+  SPY:
+    symbol: "SPY"
+    name: "S&P 500 ETF"
+    strategy: regime
+    timeframe: "1h"
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, entry_channel: 20, exit_channel: 10,
+             atr_period: 14, atr_stop_mult: 2.5, trail_atr_mult: 3.0, adx_period: 14, adx_threshold: 25.0}
+    param_bounds: {atr_stop_mult: [1.5, 4.0], adx_threshold: [18.0, 35.0]}
+
+  QQQ:
+    symbol: "QQQ"
+    name: "Nasdaq 100 ETF"
+    strategy: regime
+    timeframe: "1h"
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, entry_channel: 20, exit_channel: 10,
+             atr_period: 14, atr_stop_mult: 2.5, trail_atr_mult: 3.0, adx_period: 14, adx_threshold: 25.0}
+    param_bounds: {atr_stop_mult: [1.5, 4.0], adx_threshold: [18.0, 35.0]}
+
+  IWM:
+    symbol: "IWM"
+    name: "Russell 2000 ETF"
+    strategy: regime
+    timeframe: "1h"
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, entry_channel: 20, exit_channel: 10,
+             atr_period: 14, atr_stop_mult: 2.5, trail_atr_mult: 3.0, adx_period: 14, adx_threshold: 25.0}
+    param_bounds: {atr_stop_mult: [1.5, 4.0], adx_threshold: [18.0, 35.0]}
+
+  DIA:
+    symbol: "DIA"
+    name: "Dow Jones ETF"
+    strategy: regime
+    timeframe: "1h"
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, entry_channel: 20, exit_channel: 10,
+             atr_period: 14, atr_stop_mult: 2.5, trail_atr_mult: 3.0, adx_period: 14, adx_threshold: 25.0}
+    param_bounds: {atr_stop_mult: [1.5, 4.0], adx_threshold: [18.0, 35.0]}
+
+  XLK:
+    symbol: "XLK"
+    name: "Technology Sector ETF"
+    strategy: regime
+    timeframe: "1h"
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, entry_channel: 20, exit_channel: 10,
+             atr_period: 14, atr_stop_mult: 2.5, trail_atr_mult: 3.0, adx_period: 14, adx_threshold: 25.0}
+    param_bounds: {atr_stop_mult: [1.5, 4.0], adx_threshold: [18.0, 35.0]}
