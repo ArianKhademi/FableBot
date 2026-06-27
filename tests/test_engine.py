@@ -1,6 +1,7 @@
 """End-to-end engine tests with a fake data feed — no network."""
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from fablebot.config import (
@@ -126,6 +127,66 @@ def test_experiment_config_is_a_valid_mean_reversion_book():
     assert cfg.account.starting_equity == 100_000.0
     assert set(cfg.instruments) == {"SPY", "QQQ", "IWM", "DIA", "XLK"}
     assert all(i.strategy == "mean_reversion" and i.timeframe == "15m" for i in cfg.instruments.values())
+
+
+def _tz_aware(df, end):
+    """Re-index a frame onto a real-time (tz-aware UTC) clock ending at `end`."""
+    out = df.copy()
+    out.index = pd.date_range(end=end, periods=len(df), freq="15min", tz="UTC")
+    return out
+
+
+def test_feed_is_stale_thresholds():
+    from fablebot.engine import feed_is_stale
+    now = pd.Timestamp("2026-06-26 12:00", tz="UTC")
+    # 15m: ~40-min threshold — a 50-min-old bar is stale; the in-progress bar or a
+    # single missed poll (<=~30 min) is fine, so it doesn't false-trip intraday
+    assert feed_is_stale(now - pd.Timedelta(minutes=50), "15m", now=now)
+    assert not feed_is_stale(now - pd.Timedelta(minutes=30), "15m", now=now)
+    # daily tolerates a long weekend but not a dead week
+    assert not feed_is_stale(now - pd.Timedelta(days=3), "1d", now=now)
+    assert feed_is_stale(now - pd.Timedelta(days=7), "1d", now=now)
+
+
+def test_no_same_bar_reentry_after_exit():
+    """After exiting on a bar, the same-direction signal on that SAME bar must not
+    re-open (the stop-out -> re-enter loop). A new bar clears the block."""
+    fresh_end = pd.Timestamp.now(tz="UTC")
+    frame = _tz_aware(dip(1), fresh_end)        # oversold -> long signal, fresh
+    engine = engine_with({"^GSPC": frame, "^IXIC": flat(2), "BTC-USD": flat(3)})
+    inst = engine.config.instruments["SPX"]
+    engine._last_exit["SPX"] = (frame.index[-1], "long")   # just exited a long here
+    log = engine.evaluate_instrument(inst, frame)
+    assert "SPX" not in engine.broker.positions
+    assert any("no same-bar re-entry" in line for line in log)
+    # a new bar (later timestamp) clears the block -> the same signal opens
+    frame2 = _tz_aware(dip(1), fresh_end + pd.Timedelta(minutes=15))
+    log2 = engine.evaluate_instrument(inst, frame2)
+    assert "SPX" in engine.broker.positions
+    assert any("opened long" in line for line in log2)
+
+
+def test_cycle_idles_on_a_stale_feed_instead_of_reentry_loop():
+    """The overnight bug: when the market is closed the feed returns the same
+    'oversold' bar every poll, and the bot opened a position whose stop that bar's
+    own low already breached — stop-out and re-enter forever. A stale bar must now
+    open nothing; a fresh copy of the same dip trades normally."""
+    fresh_end = pd.Timestamp.now(tz="UTC")
+    stale_end = fresh_end - pd.Timedelta(hours=6)        # market closed: 6h-old 15m bar
+
+    engine = engine_with({"^GSPC": _tz_aware(dip(1), stale_end),
+                          "^IXIC": _tz_aware(flat(2), stale_end),
+                          "BTC-USD": _tz_aware(flat(3), stale_end)})
+    log = engine.run_cycle()
+    assert any("SPX" in line and "stale" in line for line in log)
+    assert "SPX" not in engine.broker.positions          # no degenerate entry
+
+    fresh = engine_with({"^GSPC": _tz_aware(dip(1), fresh_end),
+                         "^IXIC": _tz_aware(flat(2), fresh_end),
+                         "BTC-USD": _tz_aware(flat(3), fresh_end)})
+    log2 = fresh.run_cycle()
+    assert not any("stale" in line for line in log2)
+    assert any("SPX: opened long" in line for line in log2)
 
 
 def test_engine_runs_a_configured_genome_through_the_risk_engine():
