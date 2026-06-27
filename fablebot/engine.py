@@ -18,7 +18,7 @@ filter actually saved or cost.
 from __future__ import annotations
 
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Optional
 from zoneinfo import ZoneInfo
@@ -36,6 +36,32 @@ from .strategies import build_strategy
 from .strategies.base import Action
 
 FetchFn = Callable[[str, str], pd.DataFrame]
+
+
+# A live feed returns the SAME last bar on every poll when the market is closed
+# (overnight, weekends, holidays). Acting on a frozen bar is meaningless — and for
+# mean-reversion it's destructive: the one stale "oversold" bar keeps firing an
+# entry whose stop the same bar's low has already breached, so the loop opens and
+# stops out every cycle, bleeding the risk budget each time. Treat a bar older than
+# this (per timeframe) as stale and idle until a fresh one arrives. Generous for
+# daily so weekends/holidays aren't mistaken for a dead feed.
+_STALE_AFTER = {
+    "15m": timedelta(hours=1),
+    "1h": timedelta(hours=3),
+    "4h": timedelta(hours=10),
+    "1d": timedelta(days=4),
+}
+_STALE_AFTER_DEFAULT = timedelta(hours=3)
+
+
+def feed_is_stale(last_ts, timeframe: str, now=None) -> bool:
+    """True when the most recent bar is too old to trade on. Only meaningful for a
+    real-time, timezone-aware feed; callers skip the check for tz-naive frames
+    (synthetic test data, CSV/backtest history), which aren't a live clock."""
+    last_ts = pd.Timestamp(last_ts)
+    if now is None:
+        now = pd.Timestamp.now(tz=last_ts.tz) if last_ts.tzinfo is not None else pd.Timestamp.now()
+    return (now - last_ts) > _STALE_AFTER.get(timeframe, _STALE_AFTER_DEFAULT)
 
 
 class TradingEngine:
@@ -106,6 +132,13 @@ class TradingEngine:
         strategy = self.strategies[key]
         if len(df) < strategy.min_bars():
             return [f"{key}: only {len(df)} bars, need {strategy.min_bars()} — skipping"]
+
+        # Don't act on a frozen feed (market closed): a stale bar drives a
+        # degenerate stop-out/re-enter loop. Only real-time tz-aware feeds are
+        # checked; tz-naive frames (tests, CSV history) are never "stale".
+        idx = df.index
+        if isinstance(idx, pd.DatetimeIndex) and idx.tz is not None and feed_is_stale(idx[-1], inst.timeframe):
+            return [f"{key}: feed stale (last bar {idx[-1]}) — market closed, holding"]
 
         bar = df.iloc[-1]
         high, low, close = float(bar["high"]), float(bar["low"]), float(bar["close"])
