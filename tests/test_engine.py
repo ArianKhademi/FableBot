@@ -139,12 +139,31 @@ def _tz_aware(df, end):
 def test_feed_is_stale_thresholds():
     from fablebot.engine import feed_is_stale
     now = pd.Timestamp("2026-06-26 12:00", tz="UTC")
-    # 15m: a 2h-old bar is stale; a 20-min-old one (forming bar / missed poll) is fine
-    assert feed_is_stale(now - pd.Timedelta(hours=2), "15m", now=now)
-    assert not feed_is_stale(now - pd.Timedelta(minutes=20), "15m", now=now)
+    # 15m: ~40-min threshold — a 50-min-old bar is stale; the in-progress bar or a
+    # single missed poll (<=~30 min) is fine, so it doesn't false-trip intraday
+    assert feed_is_stale(now - pd.Timedelta(minutes=50), "15m", now=now)
+    assert not feed_is_stale(now - pd.Timedelta(minutes=30), "15m", now=now)
     # daily tolerates a long weekend but not a dead week
     assert not feed_is_stale(now - pd.Timedelta(days=3), "1d", now=now)
     assert feed_is_stale(now - pd.Timedelta(days=7), "1d", now=now)
+
+
+def test_no_same_bar_reentry_after_exit():
+    """After exiting on a bar, the same-direction signal on that SAME bar must not
+    re-open (the stop-out -> re-enter loop). A new bar clears the block."""
+    fresh_end = pd.Timestamp.now(tz="UTC")
+    frame = _tz_aware(dip(1), fresh_end)        # oversold -> long signal, fresh
+    engine = engine_with({"^GSPC": frame, "^IXIC": flat(2), "BTC-USD": flat(3)})
+    inst = engine.config.instruments["SPX"]
+    engine._last_exit["SPX"] = (frame.index[-1], "long")   # just exited a long here
+    log = engine.evaluate_instrument(inst, frame)
+    assert "SPX" not in engine.broker.positions
+    assert any("no same-bar re-entry" in line for line in log)
+    # a new bar (later timestamp) clears the block -> the same signal opens
+    frame2 = _tz_aware(dip(1), fresh_end + pd.Timedelta(minutes=15))
+    log2 = engine.evaluate_instrument(inst, frame2)
+    assert "SPX" in engine.broker.positions
+    assert any("opened long" in line for line in log2)
 
 
 def test_cycle_idles_on_a_stale_feed_instead_of_reentry_loop():

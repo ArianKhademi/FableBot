@@ -41,17 +41,20 @@ FetchFn = Callable[[str, str], pd.DataFrame]
 # A live feed returns the SAME last bar on every poll when the market is closed
 # (overnight, weekends, holidays). Acting on a frozen bar is meaningless — and for
 # mean-reversion it's destructive: the one stale "oversold" bar keeps firing an
-# entry whose stop the same bar's low has already breached, so the loop opens and
-# stops out every cycle, bleeding the risk budget each time. Treat a bar older than
-# this (per timeframe) as stale and idle until a fresh one arrives. Generous for
-# daily so weekends/holidays aren't mistaken for a dead feed.
+# entry whose stop the same bar's low has already breached. The no-same-bar-
+# re-entry guard below stops the *loop* outright; this staleness check is the
+# second layer that idles the instrument entirely once the feed is clearly frozen.
+# Each threshold is just over one bar — long enough that the in-progress bar (or a
+# single missed poll) never reads as stale, short enough to go quiet within minutes
+# of the close. Generous for daily so weekends/holidays aren't mistaken for a dead
+# feed.
 _STALE_AFTER = {
-    "15m": timedelta(hours=1),
-    "1h": timedelta(hours=3),
-    "4h": timedelta(hours=10),
+    "15m": timedelta(minutes=40),
+    "1h": timedelta(minutes=90),
+    "4h": timedelta(hours=6),
     "1d": timedelta(days=4),
 }
-_STALE_AFTER_DEFAULT = timedelta(hours=3)
+_STALE_AFTER_DEFAULT = timedelta(minutes=90)
 
 
 def feed_is_stale(last_ts, timeframe: str, now=None) -> bool:
@@ -93,6 +96,10 @@ class TradingEngine:
         )
         self.strategies = self._build_strategies()
         self.last_prices: dict[str, float] = {}
+        # (bar timestamp, direction) of the last exit per instrument — used to
+        # refuse re-opening the same position on the very bar it just exited on
+        # (the stop-out/re-enter loop). Cleared naturally as the bar advances.
+        self._last_exit: dict[str, tuple] = {}
 
     def _build_one_strategy(self, inst: InstrumentConfig):
         """Build the strategy for one instrument. A `model` spec trains a live
@@ -143,6 +150,7 @@ class TradingEngine:
         bar = df.iloc[-1]
         high, low, close = float(bar["high"]), float(bar["low"]), float(bar["close"])
         self.last_prices[key] = close
+        bar_ts = idx[-1] if isinstance(idx, pd.DatetimeIndex) else None
         context = strategy.context(df)
 
         def journal(action: str, reason: str, shadow: bool = False) -> None:
@@ -165,6 +173,8 @@ class TradingEngine:
             log.append(f"{key}: STOPPED OUT {stopped.pnl:+,.2f} ({stopped.close_reason})" + self._acct())
             journal("stopped", stopped.close_reason)
             self.journal.record_trade(stopped)
+            if bar_ts is not None:
+                self._last_exit[key] = (bar_ts, stopped.direction)
 
         # Advance the shadow book here — before entries — so a shadow opened
         # this cycle isn't stop-checked against the bar it entered on (the
@@ -174,12 +184,21 @@ class TradingEngine:
         position = self.broker.positions.get(key)
         signal = strategy.evaluate(df, position.direction if position else None)
         opened_this_cycle = False
+        # Refuse to re-open the position we just exited on this very bar (the
+        # stale/forming-bar stop-out -> re-enter loop). A new bar clears it.
+        same_bar_reentry = (signal.opens and position is None and signal.atr > 0
+                            and self._last_exit.get(key) == (bar_ts, signal.direction))
 
         if signal.action is Action.CLOSE and position is not None:
             trade = self.broker.close_position(key, close, signal.reason)
             log.append(f"{key}: closed {trade.direction} {trade.pnl:+,.2f} ({signal.reason})" + self._acct())
             journal("close", signal.reason)
             self.journal.record_trade(trade)
+            if bar_ts is not None:
+                self._last_exit[key] = (bar_ts, trade.direction)
+        elif same_bar_reentry:
+            log.append(f"{key}: {signal.direction} signal — just exited this bar, holding (no same-bar re-entry)")
+            journal("blocked", f"{signal.reason} | no same-bar re-entry")
         elif signal.opens and position is None and signal.atr > 0:
             direction = signal.direction
             allowed, why = self.correlation.allows(
