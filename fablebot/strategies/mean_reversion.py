@@ -31,6 +31,13 @@ class MeanReversion(Strategy):
         # trail_atr_mult). See current_trail_mult.
         near = self.params.get("trail_near_mult")
         self.trail_near_mult = float(near) if near is not None else None
+        # Optional trend filter: don't fade AGAINST a longer-term trend. When set,
+        # skip shorts while price is above its trend_filter_ma-bar average, and skip
+        # longs while below it — so we only mean-revert with (or neutral to) the
+        # primary trend, never into it. Kills the counter-trend fades that bleed in
+        # a sustained move. Backtests best with a LONG MA relative to lookback.
+        tfm = self.params.get("trend_filter_ma")
+        self.trend_filter_ma = int(tfm) if tfm else None
 
     def min_bars(self) -> int:
         return max(self.lookback, self.atr_period) + 1
@@ -54,6 +61,21 @@ class MeanReversion(Strategy):
         progress = max(0.0, min(1.0, progress))   # 0 at entry_z (far), 1 at exit_z (near)
         return self.trail_atr_mult + progress * (self.trail_near_mult - self.trail_atr_mult)
 
+    def _fights_trend(self, df: pd.DataFrame, opening: Action) -> bool:
+        """True if opening this fade would fight the longer-term trend: a short
+        while price is above the trend MA, or a long while below it."""
+        if not self.trend_filter_ma or len(df) <= self.trend_filter_ma:
+            return False
+        sma = float(df["close"].rolling(self.trend_filter_ma).mean().iloc[-1])
+        px = float(df["close"].iloc[-1])
+        if math.isnan(sma):
+            return False
+        if opening is Action.OPEN_SHORT and px > sma:
+            return True
+        if opening is Action.OPEN_LONG and px < sma:
+            return True
+        return False
+
     def evaluate(self, df: pd.DataFrame, position_direction: Optional[str]) -> Signal:
         z = self._z(df)
         cur_atr = self.current_atr(df)
@@ -70,8 +92,12 @@ class MeanReversion(Strategy):
             return Signal(Action.HOLD, f"awaiting reversion (z={z:+.2f})", cur_atr)
 
         if z <= -self.entry_z:
+            if self._fights_trend(df, Action.OPEN_LONG):
+                return Signal(Action.HOLD, f"oversold but below trend — not fading (z={z:+.2f})", cur_atr)
             return Signal(Action.OPEN_LONG, f"oversold stretch (z={z:+.2f})", cur_atr)
         if z >= self.entry_z:
+            if self._fights_trend(df, Action.OPEN_SHORT):
+                return Signal(Action.HOLD, f"overbought but above trend — not fading (z={z:+.2f})", cur_atr)
             return Signal(Action.OPEN_SHORT, f"overbought stretch (z={z:+.2f})", cur_atr)
         return Signal(Action.HOLD, f"inside band (z={z:+.2f})", cur_atr)
 

@@ -1,0 +1,88 @@
+# Experiment book #6 — 15m mean-reversion with a TREND FILTER.
+#
+# Identical to config_experiment.yaml except each instrument carries
+# trend_filter_ma: the strategy won't short while price is above its
+# trend_filter_ma-bar average, or buy while below it — so it only fades WITH (or
+# neutral to) the longer-term trend, never into it. This is the fix for the
+# 06-30-style day, where fading a one-way tech rally stacked up losing shorts.
+#
+#   python3 scripts/run_bot.py --config config_experiment_trendfilter.yaml --state-dir state_experiment_trendfilter
+#
+# Evidence: on 15 years of daily bars the trend filter (long MA) held returns
+# roughly flat while ~halving max drawdown and lifting win rate; on the recent
+# 15m window it turned QQQ's losing run positive. It's insurance — it gives back
+# a little upside in calm, reverting markets and protects hard in trends. This
+# book forward-tests that trade-off live against the plain 15m MR book.
+#
+# NOTE: MA200 on 15m is only ~2 trading days of trend context (the 15m feed can't
+# see further back). The cleaner version is multi-timeframe — gate 15m entries by
+# the *daily* 200-MA trend the backtest validated — which needs a small engine
+# change to feed the higher-timeframe read in. This is the same-series first cut.
+
+name: "Experiment — 15m MR + trend filter"
+
+account:
+  starting_equity: 100000.0
+  risk_per_trade: 0.01
+
+schedule:
+  timezone: "America/New_York"
+  morning_report: "07:00"
+  evening_report: "21:00"
+  poll_interval_minutes: 5
+
+correlation:
+  groups:
+    equity: [SPY, QQQ, IWM, DIA, XLK]
+  max_same_direction_per_group: 2
+
+data:
+  source: yfinance
+  cache_dir: state_experiment_trendfilter/data_cache
+  cache_ttl_minutes: 1440
+
+costs:
+  friction_bps: 3.0
+
+# Same mean-reversion entries as config_experiment.yaml, plus trend_filter_ma:
+# skip fades that fight the ~200-bar trend.
+instruments:
+  SPY:
+    symbol: "SPY"
+    name: "S&P 500 ETF"
+    strategy: mean_reversion
+    timeframe: "15m"
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trend_filter_ma: 200}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}
+
+  QQQ:
+    symbol: "QQQ"
+    name: "Nasdaq 100 ETF"
+    strategy: mean_reversion
+    timeframe: "15m"
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trend_filter_ma: 200}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}
+
+  IWM:
+    symbol: "IWM"
+    name: "Russell 2000 ETF"
+    strategy: mean_reversion
+    timeframe: "15m"
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trend_filter_ma: 200}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}
+
+  DIA:
+    symbol: "DIA"
+    name: "Dow Jones ETF"
+    strategy: mean_reversion
+    timeframe: "15m"
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trend_filter_ma: 200}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}
+
+  XLK:
+    symbol: "XLK"
+    name: "Technology Sector ETF"
+    strategy: mean_reversion
+    timeframe: "15m"
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trend_filter_ma: 200}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}

@@ -43,6 +43,22 @@ def test_mean_reversion_holds_inside_band():
     assert signal.action is Action.HOLD
 
 
+def test_trend_filter_skips_fades_against_the_trend():
+    """With trend_filter_ma set, don't short into an uptrend or buy into a
+    downtrend; the same setups fire normally without the filter."""
+    up = list(np.linspace(100, 130, 40)) + [140.0]     # uptrend + overbought spike
+    down = list(np.linspace(130, 100, 40)) + [90.0]    # downtrend + oversold spike
+    up_df, down_df = make_ohlcv(up, freq="15min"), make_ohlcv(down, freq="15min")
+
+    plain = build_strategy("mean_reversion", MR_PARAMS)
+    assert plain.evaluate(up_df, None).action is Action.OPEN_SHORT
+    assert plain.evaluate(down_df, None).action is Action.OPEN_LONG
+
+    filt = build_strategy("mean_reversion", {**MR_PARAMS, "trend_filter_ma": 30})
+    assert filt.evaluate(up_df, None).action is Action.HOLD       # won't short an uptrend
+    assert filt.evaluate(down_df, None).action is Action.HOLD     # won't buy a downtrend
+
+
 # -- momentum breakout -------------------------------------------------------
 
 def test_breakout_long_on_new_high():
