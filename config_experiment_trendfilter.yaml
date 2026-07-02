@@ -1,23 +1,24 @@
-# Experiment book #6 — 15m mean-reversion with a TREND FILTER.
+# Experiment book #6 — 15m mean-reversion with a SHORTS-ONLY trend filter.
 #
-# Identical to config_experiment.yaml except each instrument carries
-# trend_filter_ma: the strategy won't short while price is above its
-# trend_filter_ma-bar average, or buy while below it — so it only fades WITH (or
-# neutral to) the longer-term trend, never into it. This is the fix for the
-# 06-30-style day, where fading a one-way tech rally stacked up losing shorts.
+# trend_filter_ma + trend_filter_side: shorts — the strategy won't short while
+# price is above its trend_filter_ma-bar average (never fade the up-drift), but it
+# still buys every oversold dip. This is the "keep the upside AND cut the losses"
+# variant: it removes the counter-trend shorts that stacked up on the 06-30 rally
+# while keeping all the dip-buying that drives MR's returns.
 #
 #   python3 scripts/run_bot.py --config config_experiment_trendfilter.yaml --state-dir state_experiment_trendfilter
 #
-# Evidence: on 15 years of daily bars the trend filter (long MA) held returns
-# roughly flat while ~halving max drawdown and lifting win rate; on the recent
-# 15m window it turned QQQ's losing run positive. It's insurance — it gives back
-# a little upside in calm, reverting markets and protects hard in trends. This
-# book forward-tests that trade-off live against the plain 15m MR book.
+# Evidence (15 years daily): shorts-only BEAT unfiltered return while ~halving
+# drawdown — SPY +19.1%/DD11 -> +25.8%/DD6, QQQ +13.5%/DD8 -> +25.8%/DD5. The
+# symmetric filter (trend_filter_side: both) instead trades upside for robustness:
+# it also blocks longs in a downtrend, so it protects in a bear but earns less in a
+# bull. Shorts-only is a bet that equities keep drifting up (no bear-market brake);
+# switch to `both` if you want the all-weather version.
 #
-# NOTE: MA200 on 15m is only ~2 trading days of trend context (the 15m feed can't
-# see further back). The cleaner version is multi-timeframe — gate 15m entries by
-# the *daily* 200-MA trend the backtest validated — which needs a small engine
-# change to feed the higher-timeframe read in. This is the same-series first cut.
+# NOTE: MA200 on 15m is only ~2 trading days of trend (the 15m feed can't see
+# further). The validated horizon is the *daily* 200-MA — the multi-timeframe
+# version (gate 15m entries by the daily trend) is the follow-up; this is the
+# same-series first cut.
 
 name: "Experiment — 15m MR + trend filter"
 
@@ -52,7 +53,7 @@ instruments:
     name: "S&P 500 ETF"
     strategy: mean_reversion
     timeframe: "15m"
-    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trend_filter_ma: 200}
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trend_filter_ma: 200, trend_filter_side: shorts}
     param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}
 
   QQQ:
@@ -60,7 +61,7 @@ instruments:
     name: "Nasdaq 100 ETF"
     strategy: mean_reversion
     timeframe: "15m"
-    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trend_filter_ma: 200}
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trend_filter_ma: 200, trend_filter_side: shorts}
     param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}
 
   IWM:
@@ -68,7 +69,7 @@ instruments:
     name: "Russell 2000 ETF"
     strategy: mean_reversion
     timeframe: "15m"
-    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trend_filter_ma: 200}
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trend_filter_ma: 200, trend_filter_side: shorts}
     param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}
 
   DIA:
@@ -76,7 +77,7 @@ instruments:
     name: "Dow Jones ETF"
     strategy: mean_reversion
     timeframe: "15m"
-    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trend_filter_ma: 200}
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trend_filter_ma: 200, trend_filter_side: shorts}
     param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}
 
   XLK:
@@ -84,5 +85,5 @@ instruments:
     name: "Technology Sector ETF"
     strategy: mean_reversion
     timeframe: "15m"
-    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trend_filter_ma: 200}
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trend_filter_ma: 200, trend_filter_side: shorts}
     param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}
