@@ -1,0 +1,83 @@
+# Experiment book #7 — 15m mean-reversion with a SHORTS-ONLY trend filter.
+#
+# trend_filter_ma + trend_filter_side: shorts — never short while price is above
+# its ~200-bar average (don't fade the up-drift), but still buy every oversold dip.
+# The "keep the upside AND cut the losses" variant: it removes the counter-trend
+# shorts that stacked up on the 06-30 rally while keeping all the dip-buying that
+# drives MR's returns.
+#
+#   python3 scripts/run_bot.py --config config_experiment_trendfilter_shorts.yaml --state-dir state_experiment_trendfilter_shorts
+#
+# Evidence (15 years daily): shorts-only BEAT unfiltered return while ~halving
+# drawdown — SPY +19.1%/DD11 -> +25.8%/DD6, QQQ +13.5%/DD8 -> +25.8%/DD5. The
+# trade-off vs book #6 (symmetric): shorts-only earns more in a bull but is a bet
+# the up-drift continues — in a sustained bear it reverts to ~baseline (no
+# bear-market brake). Run this alongside #6 to A/B robust-vs-keep-upside live.
+
+name: "Experiment — 15m MR + shorts-only filter"
+
+account:
+  starting_equity: 100000.0
+  risk_per_trade: 0.01
+
+schedule:
+  timezone: "America/New_York"
+  morning_report: "07:00"
+  evening_report: "21:00"
+  poll_interval_minutes: 5
+
+correlation:
+  groups:
+    equity: [SPY, QQQ, IWM, DIA, XLK]
+  max_same_direction_per_group: 2
+
+data:
+  source: yfinance
+  cache_dir: state_experiment_trendfilter_shorts/data_cache
+  cache_ttl_minutes: 1440
+
+costs:
+  friction_bps: 3.0
+
+# Same entries as book #6 but trend_filter_side: shorts — block only counter-trend
+# shorts; buy every dip.
+instruments:
+  SPY:
+    symbol: "SPY"
+    name: "S&P 500 ETF"
+    strategy: mean_reversion
+    timeframe: "15m"
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trend_filter_ma: 200, trend_filter_side: shorts}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}
+
+  QQQ:
+    symbol: "QQQ"
+    name: "Nasdaq 100 ETF"
+    strategy: mean_reversion
+    timeframe: "15m"
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trend_filter_ma: 200, trend_filter_side: shorts}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}
+
+  IWM:
+    symbol: "IWM"
+    name: "Russell 2000 ETF"
+    strategy: mean_reversion
+    timeframe: "15m"
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trend_filter_ma: 200, trend_filter_side: shorts}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}
+
+  DIA:
+    symbol: "DIA"
+    name: "Dow Jones ETF"
+    strategy: mean_reversion
+    timeframe: "15m"
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trend_filter_ma: 200, trend_filter_side: shorts}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}
+
+  XLK:
+    symbol: "XLK"
+    name: "Technology Sector ETF"
+    strategy: mean_reversion
+    timeframe: "15m"
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trend_filter_ma: 200, trend_filter_side: shorts}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}

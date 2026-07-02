@@ -314,7 +314,8 @@ def render_html(snapshot: dict, engine: dict, generated_at: str, refresh_secs: i
     )
 
 
-_OVERVIEW_COLORS = ["#378ADD", "#1D9E75", "#D85A30", "#7F77DD", "#BA7517", "#D4537E"]
+_OVERVIEW_COLORS = ["#378ADD", "#1D9E75", "#D85A30", "#7F77DD", "#BA7517", "#D4537E",
+                    "#17A2B8", "#8E44AD", "#C0873A"]
 
 
 def render_overview(books: list, generated_at: str, refresh_secs: int = 150) -> str:
