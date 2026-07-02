@@ -57,12 +57,16 @@ def main() -> int:
     ap.add_argument("--out", default=ROOT / "state/dashboard_all.html")
     ap.add_argument("--no-marks", action="store_true", help="skip live price fetch (faster)")
     ap.add_argument("--open", action="store_true", help="open the page when done")
+    ap.add_argument("--exclude", default="",
+                    help="comma-separated state dir names to hide (e.g. 'state' to drop the main book)")
     args = ap.parse_args()
 
     # Every state dir with a matching config — even a fresh book that hasn't
     # traded yet (no portfolio.json until its first fill); show it at its start.
     out = Path(args.out)
-    state_dirs = sorted(p for p in ROOT.glob("state*") if p.is_dir() and _config_for(p).exists())
+    excluded = {x.strip() for x in args.exclude.split(",") if x.strip()}
+    state_dirs = sorted(p for p in ROOT.glob("state*")
+                        if p.is_dir() and _config_for(p).exists() and p.name not in excluded)
     books = []
     for sd in state_dirs:
         cfg = load_config(_config_for(sd))
