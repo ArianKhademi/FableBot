@@ -38,6 +38,12 @@ class MeanReversion(Strategy):
         # a sustained move. Backtests best with a LONG MA relative to lookback.
         tfm = self.params.get("trend_filter_ma")
         self.trend_filter_ma = int(tfm) if tfm else None
+        # Which side the filter applies to: "both" (symmetric — never fade against
+        # the trend either way; regime-robust), "shorts" (only block counter-trend
+        # shorts, buy every dip — beats baseline on secular-uptrend names like
+        # SPY/QQQ, but it's a bet the up-drift continues, with no bear-market brake),
+        # or "longs".
+        self.trend_filter_side = str(self.params.get("trend_filter_side", "both")).lower()
 
     def min_bars(self) -> int:
         return max(self.lookback, self.atr_period) + 1
@@ -70,9 +76,9 @@ class MeanReversion(Strategy):
         px = float(df["close"].iloc[-1])
         if math.isnan(sma):
             return False
-        if opening is Action.OPEN_SHORT and px > sma:
+        if opening is Action.OPEN_SHORT and px > sma and self.trend_filter_side in ("both", "shorts"):
             return True
-        if opening is Action.OPEN_LONG and px < sma:
+        if opening is Action.OPEN_LONG and px < sma and self.trend_filter_side in ("both", "longs"):
             return True
         return False
 

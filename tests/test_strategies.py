@@ -59,6 +59,17 @@ def test_trend_filter_skips_fades_against_the_trend():
     assert filt.evaluate(down_df, None).action is Action.HOLD     # won't buy a downtrend
 
 
+def test_trend_filter_side_shorts_only():
+    """side='shorts' blocks only counter-trend shorts (never fade the up-drift)
+    while still allowing longs — even a long against a downtrend."""
+    up = list(np.linspace(100, 130, 40)) + [140.0]
+    down = list(np.linspace(130, 100, 40)) + [90.0]
+    up_df, down_df = make_ohlcv(up, freq="15min"), make_ohlcv(down, freq="15min")
+    s = build_strategy("mean_reversion", {**MR_PARAMS, "trend_filter_ma": 30, "trend_filter_side": "shorts"})
+    assert s.evaluate(up_df, None).action is Action.HOLD          # short into uptrend -> blocked
+    assert s.evaluate(down_df, None).action is Action.OPEN_LONG   # long allowed regardless of trend
+
+
 # -- momentum breakout -------------------------------------------------------
 
 def test_breakout_long_on_new_high():
