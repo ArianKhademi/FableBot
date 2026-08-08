@@ -12,6 +12,12 @@ import yaml
 class AccountConfig:
     starting_equity: float = 100_000.0
     risk_per_trade: float = 0.01
+    # Daily circuit breaker: after this many same-direction HARD STOPS in one
+    # session, the book refuses further entries in that direction until the next
+    # day (opposite direction unaffected; blocked entries go to the shadow book).
+    # Kills the stop-out -> re-enter cascades that turn five correct 1% losses
+    # into a -5% day. None disables (default).
+    max_daily_stops: int | None = None
 
 
 @dataclass

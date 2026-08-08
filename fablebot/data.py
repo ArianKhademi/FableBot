@@ -25,7 +25,10 @@ import pandas as pd
 # yfinance intraday windows (and a deep daily default). 30s bars are not
 # offered; 1m ~ last 7-8d, 15m ~ last 60d — deep intraday equity history needs
 # a paid source. Daily is effectively unlimited.
-_FETCH_WINDOW = {"15m": "5d", "1h": "30d", "4h": "60d", "1d": "10y"}
+# Default (days=None) fetch window per timeframe — what the LIVE loop sees each
+# cycle. 15m is 30d (~780 bars), not 5d (~130): strategy features like the
+# 200-bar trend filter need >200 bars, and at 5d they silently never engaged.
+_FETCH_WINDOW = {"15m": "30d", "1h": "30d", "4h": "60d", "1d": "10y"}
 
 BARS_PER_YEAR = {"15m": 252 * 26, "1h": 252 * 6.5, "4h": 252 * 1.625, "1d": 252}
 

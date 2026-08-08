@@ -100,6 +100,11 @@ class TradingEngine:
         # refuse re-opening the same position on the very bar it just exited on
         # (the stop-out/re-enter loop). Cleared naturally as the bar advances.
         self._last_exit: dict[str, tuple] = {}
+        # Daily circuit breaker: (bar date, direction) -> hard-stop count across
+        # the whole book. When account.max_daily_stops is set and the count
+        # reaches it, no more entries in that direction today — the cascade
+        # brake. Keyed by bar date, so it resets naturally at the next session.
+        self._daily_stops: dict[tuple, int] = {}
 
     def _build_one_strategy(self, inst: InstrumentConfig):
         """Build the strategy for one instrument. A `model` spec trains a live
@@ -175,6 +180,8 @@ class TradingEngine:
             self.journal.record_trade(stopped)
             if bar_ts is not None:
                 self._last_exit[key] = (bar_ts, stopped.direction)
+                day_key = (str(bar_ts)[:10], stopped.direction)
+                self._daily_stops[day_key] = self._daily_stops.get(day_key, 0) + 1
 
         # Advance the shadow book here — before entries — so a shadow opened
         # this cycle isn't stop-checked against the bar it entered on (the
@@ -212,7 +219,21 @@ class TradingEngine:
                 atr_stop_mult=strategy.atr_stop_mult,
                 direction=direction,
             )
-            if not allowed:
+            # Daily circuit breaker: after max_daily_stops same-direction hard
+            # stops today, the book stops fighting that tape until tomorrow.
+            # Blocked entries still go to the shadow book so the brake's cost
+            # (blocked recoveries) stays measurable, like the correlation filter.
+            limit = self.config.account.max_daily_stops
+            tripped = (
+                limit is not None and bar_ts is not None
+                and self._daily_stops.get((str(bar_ts)[:10], direction), 0) >= limit
+            )
+            if tripped:
+                why_cb = f"circuit breaker: {limit} {direction} hard stops today — no more {direction} entries"
+                log.append(f"{key}: {direction} signal blocked — {why_cb}")
+                journal("blocked", f"{signal.reason} | {why_cb}")
+                self._open_shadow(key, direction, close, sized, strategy.name, signal.reason)
+            elif not allowed:
                 log.append(f"{key}: {direction} signal blocked — {why}")
                 journal("blocked", f"{signal.reason} | {why}")
                 self._open_shadow(key, direction, close, sized, strategy.name, signal.reason)

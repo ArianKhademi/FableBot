@@ -127,3 +127,12 @@ def test_trend_following_holds_with_trend():
     strat = build_strategy("trend_following", TF_PARAMS)
     df = make_ohlcv(np.linspace(100, 150, 80), freq="4h")
     assert strat.evaluate(df, "long").action is Action.HOLD
+
+
+def test_min_bars_declares_the_trend_filter_window():
+    """The trend filter's MA window must be part of min_bars, so a too-short feed
+    fails loudly instead of the filter silently never engaging."""
+    plain = build_strategy("mean_reversion", MR_PARAMS)
+    filt = build_strategy("mean_reversion", {**MR_PARAMS, "trend_filter_ma": 200})
+    assert filt.min_bars() >= 201
+    assert plain.min_bars() < 201                  # unchanged without the filter

@@ -397,3 +397,75 @@ def test_state_survives_restart(tmp_path):
 
     revived = engine_with(frames, state_path=state)
     assert "SPX" in revived.broker.positions
+
+
+# -- daily circuit breaker ----------------------------------------------------
+
+def test_circuit_breaker_blocks_after_daily_stop_limit():
+    """With account.max_daily_stops=N, the N-th same-direction hard stop of the
+    day shuts that direction off: further entries are blocked (and shadowed),
+    the opposite direction still trades, and a new day resets the brake."""
+    frame = dip(1)                                     # oversold -> long signal
+    day = str(frame.index[-1])[:10]
+    engine = engine_with({"^GSPC": frame, "^IXIC": flat(2), "BTC-USD": flat(3)})
+    engine.config.account.max_daily_stops = 2
+    inst = engine.config.instruments["SPX"]
+
+    engine._daily_stops[(day, "long")] = 2             # two long stops already today
+    log = engine.evaluate_instrument(inst, frame)
+    assert "SPX" not in engine.broker.positions
+    assert any("circuit breaker" in line for line in log)
+    assert "SPX" in engine.shadow.positions            # blocked entry is shadowed
+
+    # opposite direction unaffected: a spike-up (short signal) still opens
+    rip = make_ohlcv(list(noisy_flat(40, seed=1)) + [108.0], freq="15min")
+    log2 = engine.evaluate_instrument(inst, rip)
+    assert any("opened short" in line for line in log2)
+    engine.broker.close_position("SPX", 100.0, "test cleanup")
+
+    # a new day clears it: same signal, next-day timestamps -> entry opens
+    frame2 = dip(1)
+    frame2.index = frame2.index + pd.Timedelta(days=1)
+    log3 = engine.evaluate_instrument(inst, frame2)
+    assert any("opened long" in line for line in log3)
+
+
+def test_hard_stops_increment_the_daily_counter():
+    """A real STOPPED OUT bumps the (day, direction) counter the breaker reads."""
+    frames = {"^GSPC": dip(1), "^IXIC": flat(2), "BTC-USD": flat(3)}
+    engine = engine_with(frames)
+    engine.run_cycle()                                  # opens the SPX long
+    assert "SPX" in engine.broker.positions
+    crash = make_ohlcv(list(noisy_flat(40, seed=1)) + [92.0, 60.0], freq="15min")
+    log = engine.evaluate_instrument(engine.config.instruments["SPX"], crash)
+    assert any("STOPPED OUT" in line for line in log)
+    day = str(crash.index[-1])[:10]
+    assert engine._daily_stops[(day, "long")] == 1
+
+
+def test_circuit_breaker_off_by_default():
+    """max_daily_stops unset -> stops never block entries (existing behavior)."""
+    frame = dip(1)
+    day = str(frame.index[-1])[:10]
+    engine = engine_with({"^GSPC": frame, "^IXIC": flat(2), "BTC-USD": flat(3)})
+    assert engine.config.account.max_daily_stops is None
+    engine._daily_stops[(day, "long")] = 99
+    log = engine.evaluate_instrument(engine.config.instruments["SPX"], frame)
+    assert any("opened long" in line for line in log)
+
+
+def test_trend_filter_short_feed_fails_loudly():
+    """A feed too short for the trend filter must SKIP with a bar-count message,
+    not silently trade unfiltered (the bug that ran the tf books inert)."""
+    cfg = make_config()
+    cfg.instruments["SPX"] = InstrumentConfig(
+        "SPX", "^GSPC", "S&P 500", "mean_reversion", "15m",
+        {**MR_PARAMS, "trend_filter_ma": 200},
+    )
+    engine = TradingEngine(
+        cfg, state_path=None,
+        fetch=FakeFeed({"^GSPC": dip(1), "^IXIC": flat(2), "BTC-USD": flat(3)}),
+        notifier=SilentNotifier(),
+    )
+    log = engine.evaluate_instrument(cfg.instruments["SPX"], dip(1))   # 41 bars
+    assert any("need 201" in line and "skipping" in line for line in log)
