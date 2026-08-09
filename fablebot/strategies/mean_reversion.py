@@ -46,7 +46,14 @@ class MeanReversion(Strategy):
         self.trend_filter_side = str(self.params.get("trend_filter_side", "both")).lower()
 
     def min_bars(self) -> int:
-        return max(self.lookback, self.atr_period) + 1
+        # The trend filter needs its full MA window; declaring it here makes a
+        # too-short feed fail LOUDLY ("only N bars, need M — skipping") instead
+        # of the filter silently never engaging, which is how it ran inert for
+        # five weeks on a 130-bar live feed.
+        need = max(self.lookback, self.atr_period) + 1
+        if self.trend_filter_ma:
+            need = max(need, self.trend_filter_ma + 1)
+        return need
 
     def _z(self, df: pd.DataFrame) -> float:
         return float(zscore(df["close"], self.lookback).iloc[-1])

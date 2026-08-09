@@ -62,7 +62,14 @@ def test_sweep_grids_over_the_near_dimension():
 
 
 def test_adaptive_config_loads():
+    """The book was repurposed (2026-08-08): the adaptive-narrowing A/B concluded
+    ~$9k behind constant trail, so this config is now trail + circuit breaker —
+    identical to the trail book except max_daily_stops (the breaker A/B)."""
     cfg = load_config(ROOT / "config_experiment_adaptive.yaml")
-    assert cfg.name == "Experiment — 15m MR + adaptive trail"
-    assert all(i.params.get("trail_atr_mult") and i.params.get("trail_near_mult")
-               for i in cfg.instruments.values())
+    assert cfg.name == "Experiment — 15m MR + trail + breaker"
+    assert cfg.account.max_daily_stops == 2
+    trail = load_config(ROOT / "config_experiment_trail.yaml")
+    assert trail.account.max_daily_stops is None          # the control stays off
+    for key, inst in cfg.instruments.items():
+        assert inst.params.get("trail_near_mult") is None  # adaptive narrowing retired
+        assert inst.params.get("trail_atr_mult") == trail.instruments[key].params.get("trail_atr_mult")

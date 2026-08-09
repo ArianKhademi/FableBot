@@ -37,6 +37,12 @@ costs:
 # mean-reversion (range) side, entry_channel/exit_channel for the momentum (trend)
 # side, and adx_period/adx_threshold for the switch itself (25 is the classic ADX
 # trend cutoff). trail_atr_mult trails the momentum side as it rides a trend.
+#
+# adx_momentum_threshold: 40 makes it THREE-zone (added 2026-08-08): momentum only
+# fires at ADX >= 40, mean-reversion only below 25, and 25-40 takes no new
+# positions. Six weeks live showed why: all 9 momentum entries at ADX 25-32 lost
+# (whipsaw in marginal "trends"), while the only 2 winners (+$3.2k) fired at
+# ADX 51/55 — the mushy middle has no edge for either side.
 instruments:
   SPY:
     symbol: "SPY"
@@ -44,7 +50,8 @@ instruments:
     strategy: regime
     timeframe: "1h"
     params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, entry_channel: 20, exit_channel: 10,
-             atr_period: 14, atr_stop_mult: 2.5, trail_atr_mult: 3.0, adx_period: 14, adx_threshold: 25.0}
+             atr_period: 14, atr_stop_mult: 2.5, trail_atr_mult: 3.0, adx_period: 14, adx_threshold: 25.0,
+             adx_momentum_threshold: 40.0}
     param_bounds: {atr_stop_mult: [1.5, 4.0], adx_threshold: [18.0, 35.0]}
 
   QQQ:
@@ -53,7 +60,8 @@ instruments:
     strategy: regime
     timeframe: "1h"
     params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, entry_channel: 20, exit_channel: 10,
-             atr_period: 14, atr_stop_mult: 2.5, trail_atr_mult: 3.0, adx_period: 14, adx_threshold: 25.0}
+             atr_period: 14, atr_stop_mult: 2.5, trail_atr_mult: 3.0, adx_period: 14, adx_threshold: 25.0,
+             adx_momentum_threshold: 40.0}
     param_bounds: {atr_stop_mult: [1.5, 4.0], adx_threshold: [18.0, 35.0]}
 
   IWM:
@@ -62,7 +70,8 @@ instruments:
     strategy: regime
     timeframe: "1h"
     params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, entry_channel: 20, exit_channel: 10,
-             atr_period: 14, atr_stop_mult: 2.5, trail_atr_mult: 3.0, adx_period: 14, adx_threshold: 25.0}
+             atr_period: 14, atr_stop_mult: 2.5, trail_atr_mult: 3.0, adx_period: 14, adx_threshold: 25.0,
+             adx_momentum_threshold: 40.0}
     param_bounds: {atr_stop_mult: [1.5, 4.0], adx_threshold: [18.0, 35.0]}
 
   DIA:
@@ -71,7 +80,8 @@ instruments:
     strategy: regime
     timeframe: "1h"
     params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, entry_channel: 20, exit_channel: 10,
-             atr_period: 14, atr_stop_mult: 2.5, trail_atr_mult: 3.0, adx_period: 14, adx_threshold: 25.0}
+             atr_period: 14, atr_stop_mult: 2.5, trail_atr_mult: 3.0, adx_period: 14, adx_threshold: 25.0,
+             adx_momentum_threshold: 40.0}
     param_bounds: {atr_stop_mult: [1.5, 4.0], adx_threshold: [18.0, 35.0]}
 
   XLK:
@@ -80,5 +90,6 @@ instruments:
     strategy: regime
     timeframe: "1h"
     params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, entry_channel: 20, exit_channel: 10,
-             atr_period: 14, atr_stop_mult: 2.5, trail_atr_mult: 3.0, adx_period: 14, adx_threshold: 25.0}
+             atr_period: 14, atr_stop_mult: 2.5, trail_atr_mult: 3.0, adx_period: 14, adx_threshold: 25.0,
+             adx_momentum_threshold: 40.0}
     param_bounds: {atr_stop_mult: [1.5, 4.0], adx_threshold: [18.0, 35.0]}

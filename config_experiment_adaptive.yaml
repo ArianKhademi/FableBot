@@ -1,21 +1,26 @@
-# Experiment book #5 — the adaptive (narrowing) trailing stop on mean-reversion.
-# Same 15m MR across the same ETFs, but the trail starts LOOSE far from the mean
-# (trail_atr_mult, lots of room to let the reversion work) and TIGHTENS toward
-# trail_near_mult as price nears the mean — locking the gain before a bounce-away,
-# where the remaining profit is small but the give-back risk is large. Run it
-# alongside the no-trail and constant-trail books to see if the narrowing helps.
+# Experiment book #5 — 15m MR + trail + DAILY CIRCUIT BREAKER.
+#
+# (Repurposed 2026-08-08. This book's first six weeks A/B-tested the adaptive
+# narrowing trail; the verdict was clear and negative: it converted ~12 would-be
+# completed reversions (avg +$850) into early trail-locks (avg +$417), finishing
+# ~$9k behind the constant-trail book on identical entries. Experiment concluded
+# — the tightening cuts winners just before the mean.)
+#
+# Now the single-variable A/B for the circuit breaker: identical to the
+# constant-trail book (config_experiment_trail.yaml) PLUS max_daily_stops — after
+# 2 same-direction hard stops in a session, no more entries that direction until
+# tomorrow. On a replay of six weeks of live trades this rule added +$7-9k per
+# book by halting the reversal-day stop-out -> re-enter cascades (blocked
+# entries go to the shadow book, so its cost stays measurable).
 #
 #   python3 scripts/run_bot.py --config config_experiment_adaptive.yaml --state-dir state_experiment_adaptive
-#
-# Tune the narrowing speed first with:
-#   python3 scripts/stop_sweep.py --instrument SPY --config config_experiment_adaptive.yaml \
-#       --stops 2,3 --trails 3,4 --near 1,1.5,2
 
-name: "Experiment — 15m MR + adaptive trail"
+name: "Experiment — 15m MR + trail + breaker"
 
 account:
   starting_equity: 100000.0
   risk_per_trade: 0.01
+  max_daily_stops: 2
 
 schedule:
   timezone: "America/New_York"
@@ -36,53 +41,47 @@ data:
 costs:
   friction_bps: 3.0
 
-# trail_atr_mult = loose trail at entry (far from mean); trail_near_mult = tight
-# trail at the target (near the mean). The trail interpolates between them on |z|.
-#
-# trail_near_mult per instrument: a stop-sweep (scripts/stop_sweep.py --near) found
-# SPY and IWM clearly prefer a GENTLE taper (near 2.5 / 2.0) with strong OOS Sharpe,
-# so they're set there as forward tests. The other three stay at 1.0: DIA's sweep
-# preferred an aggressive taper while QQQ/XLK showed no edge at any near, so there's
-# no consistent signal to fit — leave them and let live results (or the gated search,
-# which already bounds trail_near_mult) decide. These are single-split fits being
-# forward-tested, NOT validated settings.
+# Same entries + constant trail as config_experiment_trail.yaml — the ONLY
+# difference vs that book is account.max_daily_stops above, so the pair is a
+# clean single-variable breaker A/B. (trail_near_mult removed: the adaptive
+# narrowing lost ~$9k vs this constant trail on identical entries.)
 instruments:
   SPY:
     symbol: "SPY"
     name: "S&P 500 ETF"
     strategy: mean_reversion
     timeframe: "15m"
-    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 4.0, trail_near_mult: 2.5}  # near 2.5: stop-sweep optimum (single-split fit, forward-testing)
-    param_bounds: {atr_stop_mult: [1.5, 3.5], trail_atr_mult: [2.0, 6.0], trail_near_mult: [0.5, 2.5]}
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 3.0}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5], trail_atr_mult: [2.0, 5.0]}
 
   QQQ:
     symbol: "QQQ"
     name: "Nasdaq 100 ETF"
     strategy: mean_reversion
     timeframe: "15m"
-    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 4.0, trail_near_mult: 1.0}
-    param_bounds: {atr_stop_mult: [1.5, 3.5], trail_atr_mult: [2.0, 6.0], trail_near_mult: [0.5, 2.5]}
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 3.0}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5], trail_atr_mult: [2.0, 5.0]}
 
   IWM:
     symbol: "IWM"
     name: "Russell 2000 ETF"
     strategy: mean_reversion
     timeframe: "15m"
-    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 4.0, trail_near_mult: 2.0}  # near 2.0: stop-sweep optimum (single-split fit, forward-testing)
-    param_bounds: {atr_stop_mult: [1.5, 3.5], trail_atr_mult: [2.0, 6.0], trail_near_mult: [0.5, 2.5]}
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 3.0}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5], trail_atr_mult: [2.0, 5.0]}
 
   DIA:
     symbol: "DIA"
     name: "Dow Jones ETF"
     strategy: mean_reversion
     timeframe: "15m"
-    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 4.0, trail_near_mult: 1.0}
-    param_bounds: {atr_stop_mult: [1.5, 3.5], trail_atr_mult: [2.0, 6.0], trail_near_mult: [0.5, 2.5]}
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 3.0}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5], trail_atr_mult: [2.0, 5.0]}
 
   XLK:
     symbol: "XLK"
     name: "Technology Sector ETF"
     strategy: mean_reversion
     timeframe: "15m"
-    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 4.0, trail_near_mult: 1.0}
-    param_bounds: {atr_stop_mult: [1.5, 3.5], trail_atr_mult: [2.0, 6.0], trail_near_mult: [0.5, 2.5]}
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 3.0}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5], trail_atr_mult: [2.0, 5.0]}

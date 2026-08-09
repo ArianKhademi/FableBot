@@ -235,3 +235,12 @@ def test_average_dollar_volume_and_screen():
     insts = [InstrumentConfig(key=s, symbol=s, name=s, strategy="trend_following", timeframe="1d") for s in "ABC"]
     ranked = universe.screen_universe(insts, MultiStub(), top_n=2)
     assert [i.symbol for i in ranked] == ["B", "A"]  # most liquid first, capped at 2
+
+
+def test_live_15m_window_covers_the_trend_filter():
+    """The default (live) 15m fetch window must supply >200 bars — at "5d"
+    (~130 bars) the 200-bar trend filter silently never engaged for five weeks."""
+    window = data._FETCH_WINDOW["15m"]
+    assert window.endswith("d")
+    days = int(window[:-1])
+    assert days * 26 > 200        # ~26 regular-session 15m bars per day
