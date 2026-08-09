@@ -56,3 +56,15 @@ def test_ungrouped_instrument_never_blocked(risk_on_filter):
     open_positions = {"SPX": "long", "NDX": "long", "BTC": "long"}
     allowed, _ = risk_on_filter.allows("GOLD", "long", open_positions)
     assert allowed
+
+
+def test_size_position_rejects_nan_atr_and_depleted_equity():
+    import math
+    import pytest as _pytest
+    from fablebot.risk import size_position
+    with _pytest.raises(ValueError):
+        size_position(equity=100000, risk_per_trade=0.01, entry_price=100,
+                      atr=math.nan, atr_stop_mult=2.0, direction="long")
+    with _pytest.raises(ValueError):
+        size_position(equity=0.0, risk_per_trade=0.01, entry_price=100,
+                      atr=1.0, atr_stop_mult=2.0, direction="long")

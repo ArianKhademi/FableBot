@@ -49,17 +49,34 @@ def test_context_reports_regime_and_adx():
 
 def test_three_zone_mid_band_blocks_new_entries():
     """With adx_momentum_threshold set, the ADX band between the two thresholds
-    takes no NEW positions (live: 9/9 momentum entries at ADX 25-32 lost) but a
-    held position is still managed to its exit."""
+    takes no NEW positions (live: 9/9 momentum entries at ADX 25-32 lost)."""
     rs = RegimeSwitch({**PARAMS, "adx_momentum_threshold": 40.0})
     dip = make_ohlcv(list(100 + np.random.default_rng(3).normal(0, 1, 40)) + [92.0], freq="1h")
     rs._adx = lambda df: 30.0                      # pin ADX into the mid band
     sig = rs.evaluate(dip, None)
     assert not sig.opens and "[mid" in sig.reason  # entry suppressed
-    # a held long still gets exit management (MR closes it at the mean)
+
+
+def test_held_positions_use_two_zone_exit_management():
+    """The mid band only blocks NEW risk. A held position is managed by the
+    classic two-zone routing — a momentum long at ADX 30 keeps its channel-ride
+    exit (handing it to MR would close it near-instantly, since a momentum long
+    is by construction far above its mean)."""
+    rs = RegimeSwitch({**PARAMS, "adx_momentum_threshold": 40.0})
+    rs._adx = lambda df: 30.0                      # mid band for entries
+    # rising trend, still above its 10-bar low -> momentum manager says HOLD
+    riding = make_ohlcv(list(np.linspace(100, 130, 45)), freq="1h")
+    sig = rs.evaluate(riding, "long")
+    assert sig.action.value == "hold" and "[trend" in sig.reason
+    # collapse below the 10-bar low -> the channel exit fires
+    collapsed = make_ohlcv(list(np.linspace(100, 130, 45)) + [110.0], freq="1h")
+    sig2 = rs.evaluate(collapsed, "long")
+    assert sig2.action.value == "close" and "[trend" in sig2.reason
+    # and below the range cutoff, MR manages the exit (reversion close)
+    rs._adx = lambda df: 20.0
     reverted = make_ohlcv(list(100 + np.random.default_rng(3).normal(0, 1, 40)) + [92.0, 100.0], freq="1h")
-    sig2 = rs.evaluate(reverted, "long")
-    assert sig2.action.value == "close"
+    sig3 = rs.evaluate(reverted, "long")
+    assert sig3.action.value == "close" and "[range" in sig3.reason
 
 
 def test_three_zone_outer_bands_route_normally():

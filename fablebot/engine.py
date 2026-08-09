@@ -100,11 +100,58 @@ class TradingEngine:
         # refuse re-opening the same position on the very bar it just exited on
         # (the stop-out/re-enter loop). Cleared naturally as the bar advances.
         self._last_exit: dict[str, tuple] = {}
-        # Daily circuit breaker: (bar date, direction) -> hard-stop count across
-        # the whole book. When account.max_daily_stops is set and the count
-        # reaches it, no more entries in that direction today — the cascade
-        # brake. Keyed by bar date, so it resets naturally at the next session.
+        # Bar timestamp each open position was ENTERED on. While the live loop
+        # is still polling that same (forming) bar, stops/excursions must only
+        # see post-entry prices (the close), never the bar's pre-entry range —
+        # a pre-entry spike low must not fire the stop of a position that
+        # didn't exist yet.
+        self._entry_bar: dict[str, object] = {}
+        # Deferred trailing: (candidate_stop, bar_ts) computed from a bar's
+        # extreme. Applied only once a LATER bar arrives, so a stop derived
+        # from bar B's high is never tested against bar B's own low (which may
+        # have printed before the stop existed). Mirrors backtest semantics.
+        self._pending_trail: dict[str, tuple] = {}
+        # Shadow-book twins of the guards above — without them the shadow
+        # ledger churns stop/re-open every poll on a blocked signal and the
+        # counterfactual "what the filter saved" is graded on garbage.
+        self._shadow_last_exit: dict[str, tuple] = {}
+        self._shadow_entry_bar: dict[str, object] = {}
+        self._shadow_pending_trail: dict[str, tuple] = {}
+        # Daily circuit breaker: (session date, direction) -> count of LOSING
+        # hard stops across the whole book. Keyed by the schedule-timezone
+        # session date (a bar-date key would live in per-feed timezones and
+        # reset mid-session for 24/7 symbols). Rebuilt from the journal at
+        # startup so a restart can't silently re-arm a tripped brake.
         self._daily_stops: dict[tuple, int] = {}
+        self._rebuild_daily_stops()
+
+    def _session_date(self) -> str:
+        return datetime.now(ZoneInfo(self.config.schedule.timezone)).date().isoformat()
+
+    def _rebuild_daily_stops(self) -> None:
+        """Re-count today's losing stop exits from the journal, so a mid-day
+        restart resumes the circuit breaker where it left off instead of
+        granting a fresh allowance during exactly the cascade it tripped on."""
+        if self.config.account.max_daily_stops is None:
+            return
+        try:
+            tz = ZoneInfo(self.config.schedule.timezone)
+            today = datetime.now(tz).date()
+            for entry in self.journal.read():
+                if entry.get("event") != "trade_closed" or entry.get("shadow"):
+                    continue
+                trade = entry.get("trade", {})
+                if trade.get("pnl", 0) >= 0 or "stop hit" not in trade.get("close_reason", ""):
+                    continue
+                try:
+                    closed = datetime.fromisoformat(trade.get("closed_at", ""))
+                except ValueError:
+                    continue
+                if closed.tzinfo is not None and closed.astimezone(tz).date() == today:
+                    key = (today.isoformat(), trade.get("direction"))
+                    self._daily_stops[key] = self._daily_stops.get(key, 0) + 1
+        except Exception as exc:  # a corrupt journal must not stop the bot
+            print(f"[breaker] journal rebuild skipped ({type(exc).__name__}: {exc})", flush=True)
 
     def _build_one_strategy(self, inst: InstrumentConfig):
         """Build the strategy for one instrument. A `model` spec trains a live
@@ -172,21 +219,44 @@ class TradingEngine:
                 shadow=shadow,
             )
 
-        self.broker.update_excursions(key, high, low)
-        stopped = self.broker.enforce_stops(key, high, low, close)
+        bar_open = float(bar["open"])
+        # While still polling the position's own ENTRY bar, the bar's high/low
+        # include pre-entry range the trade never lived through — stop-check
+        # and track excursions against the current price (close) only.
+        on_entry_bar = bar_ts is not None and self._entry_bar.get(key) == bar_ts
+        eff_high, eff_low = (close, close) if on_entry_bar else (high, low)
+
+        # Apply a deferred trail candidate once its source bar has passed —
+        # from now on this bar's range legitimately tests the tightened stop.
+        pending = self._pending_trail.get(key)
+        if pending is not None and bar_ts is not None and pending[1] != bar_ts:
+            del self._pending_trail[key]
+            if self.broker.tighten_stop(key, pending[0]):
+                log.append(f"{key}: stop trailed to {pending[0]:,.2f}" + self._acct())
+                journal("trail", f"stop trailed to {pending[0]:,.2f}")
+
+        self.broker.update_excursions(key, eff_high, eff_low)
+        stopped = self.broker.enforce_stops(key, eff_high, eff_low, close, open_=None if on_entry_bar else bar_open)
         if stopped is not None:
+            # Guard bookkeeping FIRST — if journaling raises (disk full), the
+            # same-bar guard and breaker must already be armed.
+            self._entry_bar.pop(key, None)
+            self._pending_trail.pop(key, None)
+            if bar_ts is not None:
+                self._last_exit[key] = (bar_ts, stopped.direction)
+                if stopped.pnl < 0:
+                    # Only LOSING stops count toward the breaker — a trailed
+                    # stop that locks profit is a win, not cascade evidence.
+                    day_key = (self._session_date(), stopped.direction)
+                    self._daily_stops[day_key] = self._daily_stops.get(day_key, 0) + 1
             log.append(f"{key}: STOPPED OUT {stopped.pnl:+,.2f} ({stopped.close_reason})" + self._acct())
             journal("stopped", stopped.close_reason)
             self.journal.record_trade(stopped)
-            if bar_ts is not None:
-                self._last_exit[key] = (bar_ts, stopped.direction)
-                day_key = (str(bar_ts)[:10], stopped.direction)
-                self._daily_stops[day_key] = self._daily_stops.get(day_key, 0) + 1
 
         # Advance the shadow book here — before entries — so a shadow opened
         # this cycle isn't stop-checked against the bar it entered on (the
         # real book gets the same courtesy by construction).
-        self._run_shadow(key, strategy, df, high, low, close, log)
+        self._run_shadow(key, strategy, df, high, low, close, log, bar_ts=bar_ts, bar_open=bar_open)
 
         position = self.broker.positions.get(key)
         signal = strategy.evaluate(df, position.direction if position else None)
@@ -198,11 +268,13 @@ class TradingEngine:
 
         if signal.action is Action.CLOSE and position is not None:
             trade = self.broker.close_position(key, close, signal.reason)
+            self._entry_bar.pop(key, None)
+            self._pending_trail.pop(key, None)
+            if bar_ts is not None:
+                self._last_exit[key] = (bar_ts, trade.direction)
             log.append(f"{key}: closed {trade.direction} {trade.pnl:+,.2f} ({signal.reason})" + self._acct())
             journal("close", signal.reason)
             self.journal.record_trade(trade)
-            if bar_ts is not None:
-                self._last_exit[key] = (bar_ts, trade.direction)
         elif same_bar_reentry:
             log.append(f"{key}: {signal.direction} signal — just exited this bar, holding (no same-bar re-entry)")
             journal("blocked", f"{signal.reason} | no same-bar re-entry")
@@ -225,18 +297,18 @@ class TradingEngine:
             # (blocked recoveries) stays measurable, like the correlation filter.
             limit = self.config.account.max_daily_stops
             tripped = (
-                limit is not None and bar_ts is not None
-                and self._daily_stops.get((str(bar_ts)[:10], direction), 0) >= limit
+                limit is not None
+                and self._daily_stops.get((self._session_date(), direction), 0) >= limit
             )
             if tripped:
                 why_cb = f"circuit breaker: {limit} {direction} hard stops today — no more {direction} entries"
                 log.append(f"{key}: {direction} signal blocked — {why_cb}")
                 journal("blocked", f"{signal.reason} | {why_cb}")
-                self._open_shadow(key, direction, close, sized, strategy.name, signal.reason)
+                self._open_shadow(key, direction, close, sized, strategy.name, signal.reason, bar_ts)
             elif not allowed:
                 log.append(f"{key}: {direction} signal blocked — {why}")
                 journal("blocked", f"{signal.reason} | {why}")
-                self._open_shadow(key, direction, close, sized, strategy.name, signal.reason)
+                self._open_shadow(key, direction, close, sized, strategy.name, signal.reason, bar_ts)
             else:
                 self.broker.open_position(
                     Position(
@@ -250,6 +322,8 @@ class TradingEngine:
                         reason=signal.reason,
                     )
                 )
+                if bar_ts is not None:
+                    self._entry_bar[key] = bar_ts
                 log.append(
                     f"{key}: opened {direction} {sized.units:.4f} @ {close:,.2f} "
                     f"(stop {sized.stop_price:,.2f}, risking {sized.risk_amount:,.2f}) — "
@@ -260,24 +334,42 @@ class TradingEngine:
         else:
             journal("hold", signal.reason)
 
-        # Trailing stop: ratchet toward price on every bar after the entry
-        # bar (trailing against the entry bar itself would re-tighten the
-        # freshly placed stop). Only ever tightens — see Position.trail.
+        # Trailing stop, DEFERRED: compute this bar's chandelier candidate from
+        # its (post-entry) extreme, but only ARM it once the next bar arrives —
+        # a stop derived from this bar's high must never be tested against this
+        # same bar's low, which may have printed before the stop existed. The
+        # entry bar itself never trails (its extremes predate the position).
         position = self.broker.positions.get(key)
-        if position is not None and not opened_this_cycle:
+        if position is not None and not opened_this_cycle and bar_ts is not None and not on_entry_bar:
             trail_mult = strategy.current_trail_mult(df, position.direction)
-            if trail_mult and self.broker.trail_stop(key, high, low, signal.atr, trail_mult):
-                new_stop = self.broker.positions[key].stop_price
-                log.append(f"{key}: stop trailed to {new_stop:,.2f}" + self._acct())
-                journal("trail", f"stop trailed to {new_stop:,.2f}")
+            if trail_mult and signal.atr > 0:
+                extreme = high if position.direction == "long" else low
+                offset = signal.atr * trail_mult
+                candidate = extreme - offset if position.direction == "long" else extreme + offset
+                tightens = (candidate > position.stop_price) if position.direction == "long" \
+                    else (candidate < position.stop_price)
+                if tightens:
+                    prev = self._pending_trail.get(key)
+                    if prev is None or prev[1] != bar_ts:
+                        self._pending_trail[key] = (candidate, bar_ts)
+                    else:
+                        better = max(prev[0], candidate) if position.direction == "long" \
+                            else min(prev[0], candidate)
+                        self._pending_trail[key] = (better, bar_ts)
         return log
 
     # -- shadow book ----------------------------------------------------------
 
     def _open_shadow(
-        self, key: str, direction: str, close: float, sized, strategy_name: str, reason: str
+        self, key: str, direction: str, close: float, sized, strategy_name: str, reason: str,
+        bar_ts=None,
     ) -> None:
         if key in self.shadow.positions:
+            return
+        # Same-bar guard, shadow edition: without it a blocked-but-still-firing
+        # signal churns one shadow stop/re-open per poll and the counterfactual
+        # ledger fills with phantom round-trips the real book could never take.
+        if bar_ts is not None and self._shadow_last_exit.get(key) == (bar_ts, direction):
             return
         self.shadow.open_position(
             Position(
@@ -291,17 +383,34 @@ class TradingEngine:
                 reason=f"[shadow] {reason}",
             )
         )
+        if bar_ts is not None:
+            self._shadow_entry_bar[key] = bar_ts
 
     def _run_shadow(
-        self, key: str, strategy, df, high: float, low: float, close: float, log: list[str]
+        self, key: str, strategy, df, high: float, low: float, close: float, log: list[str],
+        bar_ts=None, bar_open: float = None,
     ) -> None:
         """Advance the shadow position for this instrument, if any, with the
-        same stop and exit logic the real book uses."""
+        same stop/exit/entry-bar/deferred-trail semantics as the real book —
+        anything less and the counterfactual is graded on different physics."""
         if key not in self.shadow.positions:
             return
-        self.shadow.update_excursions(key, high, low)
-        stopped = self.shadow.enforce_stops(key, high, low, close)
+        on_entry_bar = bar_ts is not None and self._shadow_entry_bar.get(key) == bar_ts
+        eff_high, eff_low = (close, close) if on_entry_bar else (high, low)
+
+        pending = self._shadow_pending_trail.get(key)
+        if pending is not None and bar_ts is not None and pending[1] != bar_ts:
+            del self._shadow_pending_trail[key]
+            self.shadow.tighten_stop(key, pending[0])
+
+        self.shadow.update_excursions(key, eff_high, eff_low)
+        stopped = self.shadow.enforce_stops(key, eff_high, eff_low, close,
+                                            open_=None if on_entry_bar else bar_open)
         if stopped is not None:
+            self._shadow_entry_bar.pop(key, None)
+            self._shadow_pending_trail.pop(key, None)
+            if bar_ts is not None:
+                self._shadow_last_exit[key] = (bar_ts, stopped.direction)
             log.append(f"{key}: shadow trade stopped {stopped.pnl:+,.2f} (would-have-been)")
             self.journal.record_trade(stopped, shadow=True)
             return
@@ -309,14 +418,28 @@ class TradingEngine:
         signal = strategy.evaluate(df, direction)
         if signal.action is Action.CLOSE:
             trade = self.shadow.close_position(key, close, signal.reason)
+            self._shadow_entry_bar.pop(key, None)
+            self._shadow_pending_trail.pop(key, None)
+            if bar_ts is not None:
+                self._shadow_last_exit[key] = (bar_ts, trade.direction)
             log.append(f"{key}: shadow trade closed {trade.pnl:+,.2f} (would-have-been)")
             self.journal.record_trade(trade, shadow=True)
-        else:
-            # Shadow trades trail too (with the same dynamic multiple), or the
-            # counterfactual would flatter whichever book didn't.
+        elif bar_ts is not None and not on_entry_bar:
+            # Deferred trail, same rule as the real book.
             trail_mult = strategy.current_trail_mult(df, direction)
-            if trail_mult:
-                self.shadow.trail_stop(key, high, low, signal.atr, trail_mult)
+            if trail_mult and signal.atr > 0:
+                pos = self.shadow.positions[key]
+                extreme = high if direction == "long" else low
+                offset = signal.atr * trail_mult
+                candidate = extreme - offset if direction == "long" else extreme + offset
+                tightens = (candidate > pos.stop_price) if direction == "long" else (candidate < pos.stop_price)
+                if tightens:
+                    prev = self._shadow_pending_trail.get(key)
+                    if prev is None or prev[1] != bar_ts:
+                        self._shadow_pending_trail[key] = (candidate, bar_ts)
+                    else:
+                        better = max(prev[0], candidate) if direction == "long" else min(prev[0], candidate)
+                        self._shadow_pending_trail[key] = (better, bar_ts)
 
     def _acct(self) -> str:
         """Compact account state, appended to trade-event log lines so the
@@ -410,13 +533,22 @@ class TradingEngine:
             today = now.date().isoformat()
             if has_models and retrained_on != today:
                 print(f"[{now:%H:%M}] retraining live models for {today}", flush=True)
-                self.retrain_models()
+                try:
+                    self.retrain_models()
+                except Exception as exc:
+                    print(f"[retrain] failed, keeping current models ({type(exc).__name__}: {exc})", flush=True)
                 retrained_on = today
             for line in self.run_cycle():
                 print(f"[{now:%H:%M}] {line}", flush=True)
             self._write_dashboard()  # refresh the read-only dashboard from this cycle's marks
-            self._maybe_report(now, "morning", self.config.schedule.morning_report, sent_on)
-            self._maybe_report(now, "evening", self.config.schedule.evening_report, sent_on)
+            # Reports must never kill the trading loop (disk-full archive write,
+            # webhook hiccup, a bad snapshot fetch) — same rule as the dashboard.
+            for which, at in (("morning", self.config.schedule.morning_report),
+                              ("evening", self.config.schedule.evening_report)):
+                try:
+                    self._maybe_report(now, which, at, sent_on)
+                except Exception as exc:
+                    print(f"[report] {which} failed ({type(exc).__name__}: {exc})", flush=True)
             time.sleep(interval)
 
     def _maybe_report(

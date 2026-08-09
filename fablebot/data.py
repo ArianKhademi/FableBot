@@ -133,30 +133,66 @@ def _parse_binance_klines(rows: list) -> pd.DataFrame:
     cols = ["open_time", "open", "high", "low", "close", "volume", "close_time",
             "qav", "trades", "tbbav", "tbqav", "ignore"]
     df = pd.DataFrame(rows, columns=cols)
-    df["ts"] = pd.to_datetime(df["open_time"].astype("int64"), unit="ms")
+    # tz-AWARE UTC index: Binance timestamps are UTC, and a naive index would
+    # silently exempt Binance-fed books from the engine's stale-feed guard
+    # (which only checks tz-aware frames) and put their bar dates in a
+    # different namespace from yfinance's tz-aware indices.
+    df["ts"] = pd.to_datetime(df["open_time"].astype("int64"), unit="ms", utc=True)
     df = df.set_index("ts")
     for c in ("open", "high", "low", "close", "volume"):
         df[c] = df[c].astype(float)
     return _normalize(df)
 
 
+_BINANCE_INTERVAL_MS = {"15m": 900_000, "1h": 3_600_000, "4h": 14_400_000, "1d": 86_400_000}
+
+
 class BinanceSource:
-    """Free deep intraday crypto via Binance public klines (no key)."""
+    """Free deep intraday crypto via Binance public klines (no key).
+
+    A single request caps at 1000 klines, so deep-history asks (``days``) page
+    with ``startTime`` — previously a 700-day 1h request silently returned
+    ~42 days and the optimizer graded crypto trials on a fraction of the
+    history it believed it had."""
 
     name = "binance"
+    _MAX_PAGES = 30  # 30k klines ceiling — a runaway-loop backstop, not a target
 
     def fetch(self, symbol: str, timeframe: str, days: Optional[int] = None) -> pd.DataFrame:
         import requests
 
         if timeframe not in _BINANCE_INTERVAL:
             raise ValueError(f"Unsupported Binance timeframe {timeframe!r}")
-        params = {"symbol": _to_binance_symbol(symbol), "interval": _BINANCE_INTERVAL[timeframe], "limit": 1000}
-        resp = requests.get("https://api.binance.com/api/v3/klines", params=params, timeout=30)
-        resp.raise_for_status()
-        df = _parse_binance_klines(resp.json())
+        url = "https://api.binance.com/api/v3/klines"
+        base = {"symbol": _to_binance_symbol(symbol), "interval": _BINANCE_INTERVAL[timeframe], "limit": 1000}
+
+        if days is None:
+            resp = requests.get(url, params=base, timeout=30)
+            resp.raise_for_status()
+            df = _parse_binance_klines(resp.json())
+            if df.empty:
+                raise RuntimeError(f"No Binance data for {symbol}")
+            return df
+
+        # Page forward from (now - days) until the pages run out.
+        interval_ms = _BINANCE_INTERVAL_MS[timeframe]
+        now_ms = int(time.time() * 1000)
+        cursor = now_ms - int(days) * 86_400_000
+        pages: list = []
+        for _ in range(self._MAX_PAGES):
+            resp = requests.get(url, params={**base, "startTime": cursor}, timeout=30)
+            resp.raise_for_status()
+            rows = resp.json()
+            if not rows:
+                break
+            pages.extend(rows)
+            if len(rows) < 1000:
+                break
+            cursor = int(rows[-1][0]) + interval_ms
+        df = _parse_binance_klines(pages)
         if df.empty:
             raise RuntimeError(f"No Binance data for {symbol}")
-        return df
+        return df[~df.index.duplicated(keep="last")]
 
 
 class CachedSource:

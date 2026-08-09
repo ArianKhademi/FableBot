@@ -36,7 +36,8 @@ costs:
 # One params block configures both sub-strategies: lookback/entry_z/exit_z for the
 # mean-reversion (range) side, entry_channel/exit_channel for the momentum (trend)
 # side, and adx_period/adx_threshold for the switch itself (25 is the classic ADX
-# trend cutoff). trail_atr_mult trails the momentum side as it rides a trend.
+# trend cutoff). NOTE: trail_atr_mult applies in BOTH modes (the engine trails the
+# top-level strategy's constant multiple) — not just the momentum side.
 #
 # adx_momentum_threshold: 40 makes it THREE-zone (added 2026-08-08): momentum only
 # fires at ADX >= 40, mean-reversion only below 25, and 25-40 takes no new

@@ -27,7 +27,10 @@ class MomentumBreakout(Strategy):
         self.exit_channel = int(self.params.get("exit_channel", 10))
 
     def min_bars(self) -> int:
-        return max(self.entry_channel, self.atr_period) + 2
+        # Include the exit channel too: if exit_channel > entry_channel, a NaN
+        # exit channel would silently disable the ride-ending exit for held
+        # positions (close < NaN is False) — fail loudly on short feeds instead.
+        return max(self.entry_channel, self.exit_channel, self.atr_period) + 2
 
     def evaluate(self, df: pd.DataFrame, position_direction: Optional[str]) -> Signal:
         close = float(df["close"].iloc[-1])

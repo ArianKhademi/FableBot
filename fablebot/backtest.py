@@ -58,7 +58,9 @@ def run_backtest(
     backtest used by the unit tests; the optimizer/search pass the configured
     cost so the *trial process* is honest.
     """
-    broker = PaperBroker(starting_equity, state_path=None)
+    # Stop fills pay the same friction as every other fill (previously they
+    # were friction-free AND slippage-free, subsidizing stop-heavy configs).
+    broker = PaperBroker(starting_equity, state_path=None, friction_bps=friction_bps)
     equity_curve: list[float] = []
     warmup = strategy.min_bars()
     friction = friction_bps / 1e4
@@ -74,7 +76,12 @@ def run_backtest(
         bar = window.iloc[-1]
         close = float(bar["close"])
 
-        broker.enforce_stops(instrument, float(bar["high"]), float(bar["low"]), close)
+        # Real excursions (MFE/MAE) so backtest trades carry measurements, not
+        # clamped finals; honest gap fills via the bar's open.
+        broker.update_excursions(instrument, float(bar["high"]), float(bar["low"]))
+        stopped = broker.enforce_stops(
+            instrument, float(bar["high"]), float(bar["low"]), close, open_=float(bar["open"])
+        )
 
         position = broker.positions.get(instrument)
         signal = strategy.evaluate(window, position.direction if position else None)
@@ -82,6 +89,8 @@ def run_backtest(
 
         if signal.action is Action.CLOSE and position is not None:
             broker.close_position(instrument, _fill(close, position.direction, opening=False), signal.reason)
+        elif stopped is not None and signal.opens:
+            pass  # live blocks same-bar re-entry after a stop; the backtest must too
         elif signal.opens and position is None and signal.atr > 0:
             entry_fill = _fill(close, signal.direction, opening=True)
             sized = size_position(

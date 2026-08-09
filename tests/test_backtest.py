@@ -62,3 +62,41 @@ def test_backtest_equity_curve_length_matches_bars():
     )
     result = run_backtest(df, strat)
     assert len(result.equity_curve) == len(df) - strat.min_bars() + 1
+
+
+def test_backtest_blocks_same_bar_reentry_after_stop():
+    """Live blocks re-entering on the bar that stopped you out; the backtest
+    must too, or it books recoveries the live book cannot take. The final crash
+    bar stops the long AND re-signals oversold: with the guard the run ends
+    with exactly one trade (the stop) and no reopened position."""
+    import numpy as np
+    from fablebot.backtest import run_backtest
+    from fablebot.strategies import build_strategy
+    from tests.conftest import make_ohlcv
+    closes = list(100 + np.random.default_rng(5).normal(0, 1, 40)) + [92.0, 80.0]
+    df = make_ohlcv(closes, freq="15min")
+    strat = build_strategy("mean_reversion",
+                           {"lookback": 20, "entry_z": 2.0, "exit_z": 0.5,
+                            "atr_period": 14, "atr_stop_mult": 2.0})
+    result = run_backtest(df, strat, starting_equity=100_000.0, risk_per_trade=0.01,
+                          instrument="X")
+    assert result.trades == 1          # the stop only; no same-bar re-entry
+
+
+def test_backtest_stop_fills_pay_friction():
+    """Stop exits must not be the one friction-free fill in a friction-charged
+    backtest: the same crash path books a LARGER loss with friction_bps set."""
+    import numpy as np
+    from fablebot.backtest import run_backtest
+    from fablebot.strategies import build_strategy
+    from tests.conftest import make_ohlcv
+    closes = list(100 + np.random.default_rng(5).normal(0, 1, 40)) + [92.0, 80.0]
+    df = make_ohlcv(closes, freq="15min")
+    params = {"lookback": 20, "entry_z": 2.0, "exit_z": 0.5,
+              "atr_period": 14, "atr_stop_mult": 2.0}
+    free = run_backtest(df, build_strategy("mean_reversion", params),
+                        starting_equity=100_000.0, risk_per_trade=0.01, instrument="X")
+    paid = run_backtest(df, build_strategy("mean_reversion", params),
+                        starting_equity=100_000.0, risk_per_trade=0.01, instrument="X",
+                        friction_bps=10.0)
+    assert paid.total_pnl < free.total_pnl

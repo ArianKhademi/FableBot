@@ -43,7 +43,14 @@ class MeanReversion(Strategy):
         # shorts, buy every dip — beats baseline on secular-uptrend names like
         # SPY/QQQ, but it's a bet the up-drift continues, with no bear-market brake),
         # or "longs".
-        self.trend_filter_side = str(self.params.get("trend_filter_side", "both")).lower()
+        self.trend_filter_side = str(self.params.get("trend_filter_side", "both")).strip().lower()
+        if self.trend_filter_side not in ("both", "shorts", "longs"):
+            # A typo here ("short", "Both ") would otherwise SILENTLY disable the
+            # whole filter while min_bars still demanded its 200-bar feed — the
+            # exact silent-no-op class that ran the tf books inert for 5 weeks.
+            raise ValueError(
+                f"trend_filter_side must be 'both', 'shorts' or 'longs', got {self.params.get('trend_filter_side')!r}"
+            )
 
     def min_bars(self) -> int:
         # The trend filter needs its full MA window; declaring it here makes a

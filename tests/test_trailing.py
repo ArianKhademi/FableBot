@@ -113,6 +113,13 @@ def test_engine_trails_stop_and_journals_it():
 
     frames["BTC-USD"] = make_ohlcv(base + [110.0, 118.0])  # trend continues
     engine.run_cycle()
+    # Deferred trailing: bar B computes the candidate but the stop must NOT
+    # move while B is still the latest bar (its low may predate the stop).
+    assert engine.broker.positions["BTC"].stop_price == entry_stop
+    assert engine._pending_trail.get("BTC") is not None
+
+    frames["BTC-USD"] = make_ohlcv(base + [110.0, 118.0, 119.0])  # next bar arrives
+    engine.run_cycle()
     trailed_stop = engine.broker.positions["BTC"].stop_price
     assert trailed_stop > entry_stop
 
