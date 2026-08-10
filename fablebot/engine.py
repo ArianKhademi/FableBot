@@ -94,6 +94,25 @@ class TradingEngine:
             config.correlation.groups,
             config.correlation.max_same_direction_per_group,
         )
+        # Prop-firm rule simulation (futures books): trailing-drawdown floor,
+        # profit target, contract cap. Persisted next to the portfolio so a
+        # blown account stays blown across restarts.
+        self.prop = None
+        if config.prop is not None:
+            from .prop_rules import PropAccount
+            prop_path = Path(state_path).parent / "prop.json" if state_path else None
+            self.prop = PropAccount(
+                starting_equity=config.account.starting_equity,
+                max_drawdown=config.prop.max_drawdown,
+                drawdown_mode=config.prop.drawdown_mode,
+                profit_target=config.prop.profit_target,
+                consistency_pct=config.prop.consistency_pct,
+                buffer=config.prop.buffer,
+                max_contracts=config.prop.max_contracts,
+                state_path=prop_path,
+            )
+        self._prop_day: Optional[str] = None
+        self._prop_last_equity: float = config.account.starting_equity
         self.strategies = self._build_strategies()
         self.last_prices: dict[str, float] = {}
         # (bar timestamp, direction) of the last exit per instrument — used to
@@ -283,6 +302,11 @@ class TradingEngine:
             allowed, why = self.correlation.allows(
                 key, direction, self.broker.open_directions()
             )
+            # Futures books size in whole contracts, within the prop account's
+            # remaining contract capacity.
+            cap = None
+            if inst.contract_multiplier and self.prop is not None and self.prop.max_contracts:
+                cap = max(self.prop.max_contracts - self._open_contracts(), 0)
             sized = size_position(
                 equity=self.broker.equity,
                 risk_per_trade=self.config.account.risk_per_trade,
@@ -290,6 +314,8 @@ class TradingEngine:
                 atr=signal.atr,
                 atr_stop_mult=strategy.atr_stop_mult,
                 direction=direction,
+                contract_multiplier=inst.contract_multiplier,
+                max_contracts=cap,
             )
             # Daily circuit breaker: after max_daily_stops same-direction hard
             # stops today, the book stops fighting that tape until tomorrow.
@@ -300,7 +326,17 @@ class TradingEngine:
                 limit is not None
                 and self._daily_stops.get((self._session_date(), direction), 0) >= limit
             )
-            if tripped:
+            if self.prop is not None and self.prop.blown:
+                log.append(f"{key}: {direction} signal blocked — prop account blown, no new entries")
+                journal("blocked", f"{signal.reason} | prop account blown")
+            elif inst.contract_multiplier and sized.contracts == 0:
+                log.append(
+                    f"{key}: {direction} signal skipped — one contract "
+                    f"(${signal.atr * strategy.atr_stop_mult * inst.contract_multiplier:,.0f} risk) "
+                    f"exceeds the risk budget or contract cap"
+                )
+                journal("blocked", f"{signal.reason} | below one-contract size")
+            elif tripped:
                 why_cb = f"circuit breaker: {limit} {direction} hard stops today — no more {direction} entries"
                 log.append(f"{key}: {direction} signal blocked — {why_cb}")
                 journal("blocked", f"{signal.reason} | {why_cb}")
@@ -324,8 +360,10 @@ class TradingEngine:
                 )
                 if bar_ts is not None:
                     self._entry_bar[key] = bar_ts
+                size_str = (f"{sized.contracts} contract(s)" if inst.contract_multiplier
+                            else f"{sized.units:.4f}")
                 log.append(
-                    f"{key}: opened {direction} {sized.units:.4f} @ {close:,.2f} "
+                    f"{key}: opened {direction} {size_str} @ {close:,.2f} "
                     f"(stop {sized.stop_price:,.2f}, risking {sized.risk_amount:,.2f}) — "
                     f"{signal.reason}" + self._acct()
                 )
@@ -478,6 +516,17 @@ class TradingEngine:
         except Exception as exc:
             print(f"[dashboard] regen skipped ({type(exc).__name__}: {exc})", flush=True)
 
+    def _open_contracts(self) -> int:
+        """Whole (micro) contracts currently open across the book — units carry
+        contracts x multiplier, so divide back out per instrument."""
+        total = 0
+        for key, pos in self.broker.positions.items():
+            inst = self.config.instruments.get(key)
+            mult = getattr(inst, "contract_multiplier", None) if inst else None
+            if mult:
+                total += int(round(pos.units / mult))
+        return total
+
     def run_cycle(self) -> list[str]:
         """One full pass over all instruments."""
         log: list[str] = []
@@ -492,6 +541,22 @@ class TradingEngine:
             except Exception as exc:
                 # One instrument's failure must never take down the live loop.
                 log.append(f"{key}: evaluation error ({type(exc).__name__}: {exc}) — skipped")
+        # Prop-rule bookkeeping: feed the marked equity each cycle; EOD rolls
+        # are handled when the session date changes (see run_forever).
+        if self.prop is not None:
+            today = self._session_date()
+            if getattr(self, "_prop_day", None) is None:
+                self._prop_day = today
+            elif self._prop_day != today:
+                note = self.prop.end_of_day(self._prop_last_equity, self._prop_day)
+                if note:
+                    log.append(note)
+                self._prop_day = today
+            equity = self.broker.total_equity(self.last_prices)
+            self._prop_last_equity = equity
+            note = self.prop.update(equity, today)
+            if note:
+                log.append(note)
         return log
 
     # -- reports -------------------------------------------------------------
