@@ -94,12 +94,46 @@ cmd_stop() {
   fi
 }
 
+# Resolve a bot name to its log basename from BOTS; empty if unknown.
+lookup_log() {
+  local want=$1 n c s l
+  for row in "${BOTS[@]}"; do
+    IFS='|' read -r n c s l <<< "$row"
+    if [ "$n" = "$want" ]; then
+      echo "$l"
+      return 0
+    fi
+  done
+  return 1
+}
+
+cmd_logs() {
+  local name="${1:-}"
+  if [ -z "$name" ]; then
+    echo "usage: scripts/bots.sh logs <bot>" >&2
+    echo "known bots: $(printf '%s\n' "${BOTS[@]}" | cut -d'|' -f1 | tr '\n' ' ')" >&2
+    exit 1
+  fi
+  local log
+  if ! log=$(lookup_log "$name"); then
+    echo "unknown bot: $name" >&2
+    echo "known bots: $(printf '%s\n' "${BOTS[@]}" | cut -d'|' -f1 | tr '\n' ' ')" >&2
+    exit 1
+  fi
+  local path="logs/$log"
+  if [ ! -f "$path" ]; then
+    echo "no log yet for $name ($path) — has it been started?" >&2
+    exit 1
+  fi
+  tail -f "$path"
+}
+
 case "${1:-status}" in
   start)   cmd_start "${2:-}" ;;
   stop)    cmd_stop  "${2:-}" ;;
   restart) cmd_stop "${2:-}"; sleep 1; cmd_start "${2:-}" ;;
   status)  cmd_status ;;
   attach)  have_tmux; tmux attach -t "$SESSION" ;;
-  logs)    tail -f "logs/$(for r in "${BOTS[@]}"; do IFS='|' read -r n c s l <<< "$r"; [ "$n" = "${2:-}" ] && echo "$l"; done)" ;;
+  logs)    cmd_logs "${2:-}" ;;
   *) sed -n '2,18p' "$0" ;;
 esac
