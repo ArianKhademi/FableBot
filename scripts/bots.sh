@@ -65,12 +65,16 @@ cmd_start() {
 
 cmd_status() {
   have_tmux
-  if ! session_exists; then echo "session '$SESSION' is not running (no bots up)"; return; fi
+  # Always name every bot and show last journal write — even when the session
+  # (and therefore every window) is down. WINDOW will just read "down".
+  if ! session_exists; then
+    echo "session '$SESSION' is not running (no bots up)"
+  fi
   printf "%-11s %-9s %-22s %s\n" BOT WINDOW "LAST JOURNAL WRITE" STATE_DIR
   for row in "${BOTS[@]}"; do
     IFS='|' read -r name config state log <<< "$row"
     local win="down" wrote="-"
-    window_exists "$name" && win="UP"
+    session_exists && window_exists "$name" && win="UP"
     [ -f "$state/journal.jsonl" ] && wrote=$(date -r "$state/journal.jsonl" '+%Y-%m-%d %H:%M:%S')
     printf "%-11s %-9s %-22s %s\n" "$name" "$win" "$wrote" "$state"
   done
