@@ -17,6 +17,7 @@ class SizedTrade:
     stop_distance: float  # price distance from entry to stop
     stop_price: float
     risk_amount: float  # dollars at risk if the stop is hit
+    contracts: int = 0  # futures only: whole contracts (units = contracts * multiplier)
 
 
 def size_position(
@@ -26,9 +27,19 @@ def size_position(
     atr: float,
     atr_stop_mult: float,
     direction: str,
+    contract_multiplier: float | None = None,
+    max_contracts: int | None = None,
 ) -> SizedTrade:
     """Risk a fixed fraction of equity, with the stop placed at an ATR
-    multiple. units * stop_distance == risk budget by construction."""
+    multiple. units * stop_distance == risk budget by construction.
+
+    Futures (``contract_multiplier`` set): size in WHOLE contracts —
+    ``contracts = floor(budget / (stop_distance * multiplier))``, capped at
+    ``max_contracts``. ``units`` then carries contracts x multiplier so the
+    broker's dollar math ((price - entry) * units) stays exact, and
+    ``risk_amount`` is recomputed from the actual contracts (never above the
+    budget). ``contracts == 0`` means the smallest contract exceeds the risk
+    budget — the caller must skip the trade, not round up."""
     if atr != atr or atr <= 0:  # NaN <= 0 is False, so check NaN explicitly
         raise ValueError(f"ATR must be a positive number, got {atr}")
     if direction not in ("long", "short"):
@@ -39,8 +50,23 @@ def size_position(
         raise ValueError(f"equity depleted ({equity:,.2f}) — refusing to size a position")
     risk_amount = equity * risk_per_trade
     stop_distance = atr * atr_stop_mult
-    units = risk_amount / stop_distance
     stop_price = entry_price - stop_distance if direction == "long" else entry_price + stop_distance
+
+    if contract_multiplier:
+        per_contract_risk = stop_distance * float(contract_multiplier)
+        contracts = int(risk_amount // per_contract_risk)
+        if max_contracts is not None:
+            contracts = min(contracts, int(max_contracts))
+        contracts = max(contracts, 0)
+        return SizedTrade(
+            units=contracts * float(contract_multiplier),
+            stop_distance=stop_distance,
+            stop_price=stop_price,
+            risk_amount=contracts * per_contract_risk,
+            contracts=contracts,
+        )
+
+    units = risk_amount / stop_distance
     return SizedTrade(
         units=units,
         stop_distance=stop_distance,

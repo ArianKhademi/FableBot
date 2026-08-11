@@ -1,0 +1,88 @@
+# Experiment book #8 — FUTURES under MFF "Rapid 50k" SIM-FUNDED rules.
+#
+# Same strategy and sizing as the eval book (config_experiment_futures.yaml);
+# the ONE difference is the funded stage's harsher drawdown: $2,000 trailing
+# max drawdown evaluated in REAL TIME — an intraday equity dip that touches the
+# floor blows the account even if it recovers by the close. This is the
+# survival test for the stage that actually pays: run it alongside the eval
+# book to see whether the strategy that passes an EOD eval also lives under a
+# real-time floor. (The "Rapid EOD" account variant keeps EOD in funded too —
+# if this book dies while the eval book passes, that's the data point that the
+# EOD-mode account is the one this strategy can survive.)
+#
+#   python3 scripts/run_bot.py --config config_experiment_futures_rt.yaml --state-dir state_experiment_futures_rt
+
+name: "Experiment — futures MFF Rapid 50k (funded RT)"
+
+account:
+  starting_equity: 50000.0
+  risk_per_trade: 0.004
+  max_daily_stops: 2
+
+prop:
+  max_drawdown: 2000.0
+  drawdown_mode: realtime
+  profit_target: null
+  consistency_pct: null
+  buffer: 2100.0
+  max_contracts: 50
+
+schedule:
+  timezone: "America/New_York"
+  morning_report: "07:00"
+  evening_report: "21:00"
+  poll_interval_minutes: 5
+
+correlation:
+  # All four are US equity-index futures — one bet in four wrappers. Cap
+  # same-direction exposure at 2, same as the ETF books.
+  groups:
+    equity_futures: [MES, MNQ, M2K, MYM]
+  max_same_direction_per_group: 2
+
+data:
+  source: yfinance
+  cache_dir: state_experiment_futures_rt/data_cache
+  cache_ttl_minutes: 1440
+
+costs:
+  friction_bps: 3.0
+
+# The proven 15m MR family on the four index micros. Same z-score params as the
+# ETF books; constant trail 3.0 (the honest-backtest optimum).
+instruments:
+  MES:
+    symbol: "MES=F"
+    name: "Micro E-mini S&P 500"
+    strategy: mean_reversion
+    timeframe: "15m"
+    contract_multiplier: 5.0
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 3.0}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}
+
+  MNQ:
+    symbol: "MNQ=F"
+    name: "Micro E-mini Nasdaq-100"
+    strategy: mean_reversion
+    timeframe: "15m"
+    contract_multiplier: 2.0
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 3.0}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}
+
+  M2K:
+    symbol: "M2K=F"
+    name: "Micro E-mini Russell 2000"
+    strategy: mean_reversion
+    timeframe: "15m"
+    contract_multiplier: 5.0
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 3.0}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}
+
+  MYM:
+    symbol: "MYM=F"
+    name: "Micro E-mini Dow"
+    strategy: mean_reversion
+    timeframe: "15m"
+    contract_multiplier: 0.5
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 3.0}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}

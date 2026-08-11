@@ -59,6 +59,10 @@ class InstrumentConfig:
     # Falls back to config.data.source when unset. The symbol is translated as
     # needed (BTC-USD -> BTCUSDT for Binance), so news/display stay on Yahoo.
     source: str | None = None
+    # Futures: dollars per 1.0 point of price movement per contract (MES $5,
+    # MNQ $2, M2K $5, MYM $0.50). When set, sizing is in whole contracts and
+    # the broker's ``units`` carry contracts x multiplier so P&L math is exact.
+    contract_multiplier: float | None = None
 
 
 @dataclass
@@ -85,6 +89,18 @@ class UniverseConfig:
 
 
 @dataclass
+class PropConfig:
+    """Prop-firm survival rules (see fablebot/prop_rules.py). Present in a
+    config only for the funded-futures simulation books."""
+    max_drawdown: float = 2000.0
+    drawdown_mode: str = "eod"           # "eod" | "realtime"
+    profit_target: float | None = None
+    consistency_pct: float | None = None
+    buffer: float | None = None
+    max_contracts: int | None = None     # account-wide cap, in MICRO contracts
+
+
+@dataclass
 class CostsConfig:
     # Combined commission + slippage applied to every backtest fill during the
     # *trial process* so the gate can't certify a frictionless-only edge.
@@ -100,6 +116,8 @@ class Config:
     data: DataConfig = field(default_factory=DataConfig)
     universe: UniverseConfig = field(default_factory=UniverseConfig)
     costs: CostsConfig = field(default_factory=CostsConfig)
+    # Prop-firm rule simulation (futures books only); None = no prop layer.
+    prop: PropConfig | None = None
     # Display name for this book — shown as the dashboard heading, so several
     # bots (main, experiment, …) are distinguishable at a glance.
     name: str = "FableBot"
@@ -119,6 +137,7 @@ def load_config(path: str | Path) -> Config:
         data=DataConfig(**raw.get("data", {})),
         universe=UniverseConfig(**raw.get("universe", {})),
         costs=CostsConfig(**raw.get("costs", {})),
+        prop=PropConfig(**raw["prop"]) if raw.get("prop") else None,
         name=raw.get("name", "FableBot"),
     )
 

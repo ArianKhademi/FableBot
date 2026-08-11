@@ -1,0 +1,99 @@
+# Experiment book #7 — FUTURES under prop-firm rules (MFF "Rapid 50k" EVAL).
+#
+# The question this book answers on paper, before any real order exists:
+# "can the proven 15m mean-reversion family PASS a My Funded Futures Rapid 50k
+# evaluation?" — i.e. reach +$3,000 without ever breaching the $2,000
+# END-OF-DAY trailing max drawdown, inside the 50-micro-contract cap.
+#
+#   python3 scripts/run_bot.py --config config_experiment_futures.yaml --state-dir state_experiment_futures
+#
+# Encoded rules (Rapid 50k eval): max_drawdown $2k EOD-trailing; profit target
+# $3k; 5 minis = 50 micros max position; 50% consistency (reported, as MFF
+# applies it at passing/payout); $2.1k buffer locks the floor. No daily loss
+# limit (the account has none in eval). The prop layer (fablebot/prop_rules.py)
+# halts all NEW entries the moment the account blows, and its state persists —
+# a blown eval stays blown across restarts, like the real thing.
+#
+# Sizing: risk_per_trade 0.004 x $50k = $200/trade, in WHOLE micro contracts
+# (MES $5/pt, MNQ $2/pt, M2K $5/pt, MYM $0.50/pt). A signal whose single-
+# contract risk exceeds the budget is SKIPPED, never rounded up. $200 against a
+# $2k drawdown = 10 consecutive losers of headroom; the circuit breaker
+# (max_daily_stops: 2) caps any one day's same-direction cascade.
+#
+# Data: micro futures via yfinance (MES=F etc., ~23h sessions — the stale-feed
+# guard idles the book across the daily maintenance break + weekends).
+
+name: "Experiment — futures MFF Rapid 50k (eval)"
+
+account:
+  starting_equity: 50000.0
+  risk_per_trade: 0.004
+  max_daily_stops: 2
+
+prop:
+  max_drawdown: 2000.0
+  drawdown_mode: eod
+  profit_target: 3000.0
+  consistency_pct: 50.0
+  buffer: 2100.0
+  max_contracts: 50
+
+schedule:
+  timezone: "America/New_York"
+  morning_report: "07:00"
+  evening_report: "21:00"
+  poll_interval_minutes: 5
+
+correlation:
+  # All four are US equity-index futures — one bet in four wrappers. Cap
+  # same-direction exposure at 2, same as the ETF books.
+  groups:
+    equity_futures: [MES, MNQ, M2K, MYM]
+  max_same_direction_per_group: 2
+
+data:
+  source: yfinance
+  cache_dir: state_experiment_futures/data_cache
+  cache_ttl_minutes: 1440
+
+costs:
+  friction_bps: 3.0
+
+# The proven 15m MR family on the four index micros. Same z-score params as the
+# ETF books; constant trail 3.0 (the honest-backtest optimum).
+instruments:
+  MES:
+    symbol: "MES=F"
+    name: "Micro E-mini S&P 500"
+    strategy: mean_reversion
+    timeframe: "15m"
+    contract_multiplier: 5.0
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 3.0}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}
+
+  MNQ:
+    symbol: "MNQ=F"
+    name: "Micro E-mini Nasdaq-100"
+    strategy: mean_reversion
+    timeframe: "15m"
+    contract_multiplier: 2.0
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 3.0}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}
+
+  M2K:
+    symbol: "M2K=F"
+    name: "Micro E-mini Russell 2000"
+    strategy: mean_reversion
+    timeframe: "15m"
+    contract_multiplier: 5.0
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 3.0}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}
+
+  MYM:
+    symbol: "MYM=F"
+    name: "Micro E-mini Dow"
+    strategy: mean_reversion
+    timeframe: "15m"
+    contract_multiplier: 0.5
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 3.0}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5]}
