@@ -12,7 +12,7 @@ enforces the hard stop two ways:
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, fields
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -37,16 +37,41 @@ class Position:
     # open. Feeds the learning loop's stop-quality analysis.
     max_favorable_pnl: float = 0.0
     max_adverse_pnl: float = 0.0
+    # True once the stop has been ratcheted from its entry placement, so a
+    # stop exit can be labeled honestly ("trail stop hit" vs "hard stop hit")
+    # and loss-only logic (the daily circuit breaker) can tell them apart.
+    stop_trailed: bool = False
 
     def unrealized_pnl(self, price: float) -> float:
         sign = 1.0 if self.direction == "long" else -1.0
         return (price - self.entry_price) * self.units * sign
 
-    def update_excursions(self, high: float, low: float) -> None:
+    def update_excursions(self, high: float, low: float) -> bool:
+        """Returns True when either extreme moved (lets callers skip a save)."""
         best = high if self.direction == "long" else low
         worst = low if self.direction == "long" else high
-        self.max_favorable_pnl = max(self.max_favorable_pnl, self.unrealized_pnl(best))
-        self.max_adverse_pnl = min(self.max_adverse_pnl, self.unrealized_pnl(worst))
+        fav = max(self.max_favorable_pnl, self.unrealized_pnl(best))
+        adv = min(self.max_adverse_pnl, self.unrealized_pnl(worst))
+        moved = fav != self.max_favorable_pnl or adv != self.max_adverse_pnl
+        self.max_favorable_pnl, self.max_adverse_pnl = fav, adv
+        return moved
+
+    def tighten_to(self, candidate: float) -> bool:
+        """Move the stop to ``candidate`` only if that tightens it (long: up,
+        short: down). The only-tighten invariant lives here."""
+        if candidate != candidate:  # NaN guard
+            return False
+        if self.direction == "long":
+            if candidate > self.stop_price:
+                self.stop_price = candidate
+                self.stop_trailed = True
+                return True
+        else:
+            if candidate < self.stop_price:
+                self.stop_price = candidate
+                self.stop_trailed = True
+                return True
+        return False
 
     def trail(self, high: float, low: float, atr: float, trail_mult: float) -> bool:
         """Ratchet the stop toward price, chandelier-style: an ATR multiple
@@ -55,17 +80,9 @@ class Position:
         stop moved."""
         if atr <= 0 or trail_mult <= 0:
             return False
-        if self.direction == "long":
-            candidate = high - atr * trail_mult
-            if candidate > self.stop_price:
-                self.stop_price = candidate
-                return True
-        else:
-            candidate = low + atr * trail_mult
-            if candidate < self.stop_price:
-                self.stop_price = candidate
-                return True
-        return False
+        extreme = high if self.direction == "long" else low
+        offset = atr * trail_mult
+        return self.tighten_to(extreme - offset if self.direction == "long" else extreme + offset)
 
     def stop_hit(self, high: float, low: float) -> bool:
         if self.direction == "long":
@@ -102,11 +119,20 @@ class Broker:
 
 
 class PaperBroker(Broker):
-    def __init__(self, starting_equity: float, state_path: Optional[Path] = None):
+    def __init__(
+        self,
+        starting_equity: float,
+        state_path: Optional[Path] = None,
+        friction_bps: float = 0.0,
+    ):
         self.starting_equity = starting_equity
         self.realized_pnl = 0.0
         self.positions: dict[str, Position] = {}
         self.trades: list[Trade] = []
+        # Slippage applied to STOP fills (adverse: a long's stop fills lower, a
+        # short's higher). Backtests pass the configured friction so stop-heavy
+        # configs can't collect frictionless exits; the live paper book keeps 0.
+        self.friction_bps = float(friction_bps)
         self.state_path = Path(state_path) if state_path else None
         if self.state_path and self.state_path.exists():
             self._load()
@@ -161,9 +187,8 @@ class PaperBroker(Broker):
 
     def update_excursions(self, instrument: str, high: float, low: float) -> None:
         pos = self.positions.get(instrument)
-        if pos is not None:
-            pos.update_excursions(high, low)
-            self._save()
+        if pos is not None and pos.update_excursions(high, low):
+            self._save()  # only rewrite state when an extreme actually moved
 
     def trail_stop(
         self, instrument: str, high: float, low: float, atr: float, trail_mult: float
@@ -176,15 +201,56 @@ class PaperBroker(Broker):
             self._save()
         return moved
 
-    def enforce_stops(self, instrument: str, high: float, low: float, close: float) -> Optional[Trade]:
-        """The hard stop, checked every cycle. Returns the closing trade if
-        the position was cut."""
+    def tighten_stop(self, instrument: str, candidate: float) -> bool:
+        """Apply a pre-computed stop candidate (only-tighten). Used by the
+        engine's deferred trailing: a stop derived from bar B's extreme becomes
+        active on bar B+1, never tested against the bar that produced it."""
+        pos = self.positions.get(instrument)
+        if pos is None:
+            return False
+        moved = pos.tighten_to(candidate)
+        if moved:
+            self._save()
+        return moved
+
+    def _stop_fill(self, pos: Position, raw: float) -> float:
+        """Adverse slippage on a stop fill (long exits lower, short higher)."""
+        if not self.friction_bps:
+            return raw
+        slip = self.friction_bps / 1e4
+        return raw * (1.0 - slip) if pos.direction == "long" else raw * (1.0 + slip)
+
+    def enforce_stops(
+        self,
+        instrument: str,
+        high: float,
+        low: float,
+        close: float,
+        open_: Optional[float] = None,
+    ) -> Optional[Trade]:
+        """The hard stop, checked every cycle. Returns the closing trade if the
+        position was cut. When the bar's ``open_`` is supplied and price GAPPED
+        past the stop, the fill is the open — the first price that actually
+        traded — not the stop level nothing ever traded at. Trailed stops are
+        labeled distinctly so profit-locks and loss stops stay separable."""
         pos = self.positions.get(instrument)
         if pos is None:
             return None
         if pos.stop_hit(high, low):
+            fill = pos.stop_price
+            reason_price = pos.stop_price
+            if open_ is not None:
+                gapped = (open_ <= pos.stop_price) if pos.direction == "long" else (open_ >= pos.stop_price)
+                if gapped:
+                    fill = open_
+            label = "trail stop hit at" if pos.stop_trailed else "hard stop hit at"
+            if fill != reason_price:
+                return self.close_position(
+                    instrument, self._stop_fill(pos, fill),
+                    f"{label} {reason_price:,.2f} (gapped, filled {fill:,.2f})",
+                )
             return self.close_position(
-                instrument, pos.stop_price, f"hard stop hit at {pos.stop_price:,.2f}"
+                instrument, self._stop_fill(pos, fill), f"{label} {reason_price:,.2f}"
             )
         # Gap protection: loss already past the risk budget at the close.
         if pos.unrealized_pnl(close) <= -pos.risk_amount:
@@ -211,5 +277,15 @@ class PaperBroker(Broker):
         state = json.loads(self.state_path.read_text())
         self.starting_equity = state["starting_equity"]
         self.realized_pnl = state["realized_pnl"]
-        self.positions = {k: Position(**p) for k, p in state["positions"].items()}
-        self.trades = [Trade(**t) for t in state["trades"]]
+        # Tolerant load: drop keys the current dataclasses don't know, so a
+        # rollback to older code (or a removed field) can't hold the book's
+        # history hostage with a TypeError at startup.
+        pos_fields = {f.name for f in fields(Position)}
+        trade_fields = {f.name for f in fields(Trade)}
+        self.positions = {
+            k: Position(**{n: v for n, v in p.items() if n in pos_fields})
+            for k, p in state["positions"].items()
+        }
+        self.trades = [
+            Trade(**{n: v for n, v in t.items() if n in trade_fields}) for t in state["trades"]
+        ]

@@ -244,3 +244,40 @@ def test_live_15m_window_covers_the_trend_filter():
     assert window.endswith("d")
     days = int(window[:-1])
     assert days * 26 > 200        # ~26 regular-session 15m bars per day
+
+
+def test_binance_klines_index_is_tz_aware_utc():
+    """A naive index would silently exempt Binance books from the stale-feed
+    guard (it only checks tz-aware frames)."""
+    rows = [[1700000000000, "100", "110", "95", "105", "12", 0, "0", 3, "0", "0", "0"]]
+    df = data._parse_binance_klines(rows)
+    assert df.index.tz is not None
+
+
+def test_binance_deep_history_pages_past_1000(monkeypatch):
+    """days=... must page with startTime, not silently truncate at 1000 klines."""
+    interval_ms = 3_600_000
+    t0 = 1_600_000_000_000
+
+    class FakeResp:
+        def __init__(self, rows): self._rows = rows
+        def raise_for_status(self): pass
+        def json(self): return self._rows
+
+    calls = []
+    def fake_get(url, params=None, timeout=None):
+        calls.append(params)
+        start = params.get("startTime")
+        assert start is not None
+        # serve 1000 klines per page for two pages, then a short page
+        n = 1000 if len(calls) <= 2 else 500
+        rows = [[start + i * interval_ms, "1", "2", "0.5", "1.5", "9", 0, "0", 1, "0", "0", "0"]
+                for i in range(n)]
+        return FakeResp(rows)
+
+    import fablebot.data as d
+    monkeypatch.setattr("requests.get", fake_get, raising=False)
+    monkeypatch.setattr(d.time, "time", lambda: (t0 + 2600 * interval_ms) / 1000.0)
+    df = d.BinanceSource().fetch("BTC-USD", "1h", days=109)   # ~2616 hourly bars
+    assert len(calls) >= 3                                     # actually paged
+    assert len(df) == 2500                                     # 1000+1000+500

@@ -29,10 +29,14 @@ def size_position(
 ) -> SizedTrade:
     """Risk a fixed fraction of equity, with the stop placed at an ATR
     multiple. units * stop_distance == risk budget by construction."""
-    if atr <= 0:
-        raise ValueError(f"ATR must be positive, got {atr}")
+    if atr != atr or atr <= 0:  # NaN <= 0 is False, so check NaN explicitly
+        raise ValueError(f"ATR must be a positive number, got {atr}")
     if direction not in ("long", "short"):
         raise ValueError(f"direction must be 'long' or 'short', got {direction!r}")
+    if equity <= 0:
+        # A depleted book must never size a position: negative risk flips the
+        # units sign and turns every rule (stops, gap checks) inside out.
+        raise ValueError(f"equity depleted ({equity:,.2f}) — refusing to size a position")
     risk_amount = equity * risk_per_trade
     stop_distance = atr * atr_stop_mult
     units = risk_amount / stop_distance

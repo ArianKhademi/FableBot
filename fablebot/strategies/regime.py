@@ -40,6 +40,13 @@ class RegimeSwitch(Strategy):
         # winners fired at ADX 50+. Unset => classic two-zone switch.
         amt = self.params.get("adx_momentum_threshold")
         self.adx_momentum_threshold = float(amt) if amt is not None else None
+        if self.adx_momentum_threshold is not None and self.adx_momentum_threshold < self.adx_threshold:
+            # An inverted pair would silently erase the mid band and move the
+            # momentum cutoff BELOW the range cutoff — fail loudly instead.
+            raise ValueError(
+                f"adx_momentum_threshold ({self.adx_momentum_threshold}) must be >= "
+                f"adx_threshold ({self.adx_threshold})"
+            )
         # Both sub-strategies read the same params dict; each picks the keys it
         # needs (lookback/entry_z for MR, entry_channel for momentum) and ignores
         # the rest, so one config block configures both.
@@ -47,7 +54,11 @@ class RegimeSwitch(Strategy):
         self.trend_strategy = MomentumBreakout(params)
 
     def min_bars(self) -> int:
-        return max(self.range_strategy.min_bars(), self.trend_strategy.min_bars(), self.adx_period + 1)
+        # Wilder ADX is double-smoothed: DI needs adx_period bars, then the ADX
+        # ewm needs adx_period non-NaN DX values — first real ADX at ~2*period.
+        # Understating this routes the NaN gap to mean-reversion with the switch
+        # silently inert (the same class as the trend-filter window bug).
+        return max(self.range_strategy.min_bars(), self.trend_strategy.min_bars(), 2 * self.adx_period)
 
     def _adx(self, df: pd.DataFrame) -> float:
         series, _, _ = adx(df, self.adx_period)
@@ -65,25 +76,39 @@ class RegimeSwitch(Strategy):
             return "range", a
         return "mid", a
 
+    def _manager(self, a: float):
+        """Which sub-strategy MANAGES a held position: the classic two-zone
+        routing (>= adx_threshold -> momentum, else MR), regardless of the
+        three-zone entry gate. Rationale: the mid band must only block NEW
+        risk. Handing a held momentum position to MR's exit rule would close it
+        almost instantly (a momentum long is by construction far above its
+        mean, so MR's `z >= -exit_z` is immediately true) — the channel ride
+        that produced the only live momentum winners would be unreachable the
+        moment ADX dipped below the momentum threshold."""
+        trending = (not math.isnan(a)) and a >= self.adx_threshold
+        return (self.trend_strategy if trending else self.range_strategy), ("trend" if trending else "range")
+
     def _active(self, df: pd.DataFrame):
-        """(active sub-strategy, adx value, trending?). In the mid band the range
-        strategy is the manager (it can exit a held position at the mean) but
-        evaluate() blocks new entries there."""
+        """(active sub-strategy, adx value, trending?). Entry-side view."""
         mode, a = self._mode(df)
         return (self.trend_strategy if mode == "trend" else self.range_strategy), a, mode == "trend"
 
     def evaluate(self, df: pd.DataFrame, position_direction: Optional[str]) -> Signal:
         mode, a = self._mode(df)
         adx_str = f"{a:.0f}" if not math.isnan(a) else "?"
+        if position_direction is not None:
+            # Held positions: two-zone exit management (see _manager).
+            strat, label = self._manager(a)
+            sig = strat.evaluate(df, position_direction)
+            if sig.opens:  # a manager can't open; flat-side signals become holds
+                return Signal(Action.HOLD, f"[{label} adx={adx_str}] holding position", sig.atr)
+            return Signal(sig.action, f"[{label} adx={adx_str}] {sig.reason}", sig.atr)
+        # Flat: three-zone entry gate — no fresh risk in the in-between band.
         if mode == "mid":
-            # No fresh risk in the in-between band; a held position is still
-            # managed (exits/holds) by the range strategy so it isn't stranded.
-            sig = self.range_strategy.evaluate(df, position_direction)
-            if sig.opens:
-                return Signal(Action.HOLD, f"[mid adx={adx_str}] between regimes — no new entries", sig.atr)
-            return Signal(sig.action, f"[mid adx={adx_str}] {sig.reason}", sig.atr)
+            sig = self.range_strategy.evaluate(df, None)
+            return Signal(Action.HOLD, f"[mid adx={adx_str}] between regimes — no new entries", sig.atr)
         strat = self.trend_strategy if mode == "trend" else self.range_strategy
-        sig = strat.evaluate(df, position_direction)
+        sig = strat.evaluate(df, None)
         return Signal(sig.action, f"[{mode} adx={adx_str}] {sig.reason}", sig.atr)
 
     def context(self, df: pd.DataFrame) -> dict:

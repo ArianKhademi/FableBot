@@ -402,16 +402,16 @@ def test_state_survives_restart(tmp_path):
 # -- daily circuit breaker ----------------------------------------------------
 
 def test_circuit_breaker_blocks_after_daily_stop_limit():
-    """With account.max_daily_stops=N, the N-th same-direction hard stop of the
-    day shuts that direction off: further entries are blocked (and shadowed),
-    the opposite direction still trades, and a new day resets the brake."""
+    """With account.max_daily_stops=N, N same-direction LOSING stops today shut
+    that direction off: entries are blocked (and shadowed), the opposite
+    direction still trades, and the next session date resets the brake."""
     frame = dip(1)                                     # oversold -> long signal
-    day = str(frame.index[-1])[:10]
     engine = engine_with({"^GSPC": frame, "^IXIC": flat(2), "BTC-USD": flat(3)})
     engine.config.account.max_daily_stops = 2
     inst = engine.config.instruments["SPX"]
 
-    engine._daily_stops[(day, "long")] = 2             # two long stops already today
+    today = engine._session_date()
+    engine._daily_stops[(today, "long")] = 2           # two losing long stops today
     log = engine.evaluate_instrument(inst, frame)
     assert "SPX" not in engine.broker.positions
     assert any("circuit breaker" in line for line in log)
@@ -423,35 +423,143 @@ def test_circuit_breaker_blocks_after_daily_stop_limit():
     assert any("opened short" in line for line in log2)
     engine.broker.close_position("SPX", 100.0, "test cleanup")
 
-    # a new day clears it: same signal, next-day timestamps -> entry opens
+    # a new SESSION date clears it (the key rolls; counts stay behind)
+    engine._session_date = lambda: "2099-01-01"
     frame2 = dip(1)
     frame2.index = frame2.index + pd.Timedelta(days=1)
     log3 = engine.evaluate_instrument(inst, frame2)
     assert any("opened long" in line for line in log3)
 
 
-def test_hard_stops_increment_the_daily_counter():
-    """A real STOPPED OUT bumps the (day, direction) counter the breaker reads."""
+def test_losing_stops_increment_counter_but_profitable_trail_locks_do_not():
+    """Only LOSING stop exits count toward the breaker — a trailed stop that
+    locks profit is a win, not cascade evidence."""
     frames = {"^GSPC": dip(1), "^IXIC": flat(2), "BTC-USD": flat(3)}
     engine = engine_with(frames)
-    engine.run_cycle()                                  # opens the SPX long
+    engine.run_cycle()                                  # opens the SPX long @92
     assert "SPX" in engine.broker.positions
     crash = make_ohlcv(list(noisy_flat(40, seed=1)) + [92.0, 60.0], freq="15min")
     log = engine.evaluate_instrument(engine.config.instruments["SPX"], crash)
     assert any("STOPPED OUT" in line for line in log)
-    day = str(crash.index[-1])[:10]
-    assert engine._daily_stops[(day, "long")] == 1
+    today = engine._session_date()
+    assert engine._daily_stops[(today, "long")] == 1    # losing stop counted
+
+    # now a PROFITABLE trailed-stop exit: reopen, trail the stop above entry,
+    # then hit it — pnl > 0 must NOT increment the counter.
+    frame2 = dip(1)
+    frame2.index = frame2.index + pd.Timedelta(days=1)
+    engine.evaluate_instrument(engine.config.instruments["SPX"], frame2)
+    assert "SPX" in engine.broker.positions
+    pos = engine.broker.positions["SPX"]
+    pos.tighten_to(pos.entry_price + 1.0)               # trailed above entry
+    dip_back = make_ohlcv(list(noisy_flat(40, seed=1)) + [92.0, pos.entry_price + 0.5], freq="15min")
+    dip_back.index = dip_back.index + pd.Timedelta(days=1)
+    log3 = engine.evaluate_instrument(engine.config.instruments["SPX"], dip_back)
+    stopped_line = [l for l in log3 if "STOPPED OUT" in l]
+    assert stopped_line and "trail stop hit" in stopped_line[0]   # labeled honestly
+    assert engine._daily_stops[(today, "long")] == 1    # unchanged: profit lock
 
 
 def test_circuit_breaker_off_by_default():
     """max_daily_stops unset -> stops never block entries (existing behavior)."""
     frame = dip(1)
-    day = str(frame.index[-1])[:10]
     engine = engine_with({"^GSPC": frame, "^IXIC": flat(2), "BTC-USD": flat(3)})
     assert engine.config.account.max_daily_stops is None
-    engine._daily_stops[(day, "long")] = 99
+    engine._daily_stops[(engine._session_date(), "long")] = 99
     log = engine.evaluate_instrument(engine.config.instruments["SPX"], frame)
     assert any("opened long" in line for line in log)
+
+
+def test_breaker_counter_rebuilds_from_journal_on_restart(tmp_path):
+    """A restart must not re-arm a tripped breaker: today's losing stops are
+    re-counted from the journal at startup."""
+    import json as _json
+    from datetime import datetime, timezone
+    journal_path = tmp_path / "journal.jsonl"
+    now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+    for _ in range(2):
+        journal_path.open("a").write(_json.dumps({
+            "ts": now, "event": "trade_closed", "shadow": False,
+            "trade": {"instrument": "SPX", "direction": "long", "pnl": -1000.0,
+                      "close_reason": "hard stop hit at 90.00", "closed_at": now},
+        }) + "\n")
+    # a profitable trail-lock and a shadow stop must NOT count
+    journal_path.open("a").write(_json.dumps({
+        "ts": now, "event": "trade_closed", "shadow": False,
+        "trade": {"instrument": "SPX", "direction": "long", "pnl": +500.0,
+                  "close_reason": "trail stop hit at 95.00", "closed_at": now},
+    }) + "\n")
+    journal_path.open("a").write(_json.dumps({
+        "ts": now, "event": "trade_closed", "shadow": True,
+        "trade": {"instrument": "SPX", "direction": "long", "pnl": -900.0,
+                  "close_reason": "hard stop hit at 90.00", "closed_at": now},
+    }) + "\n")
+    cfg = make_config()
+    cfg.account.max_daily_stops = 2
+    engine = TradingEngine(cfg, state_path=None, journal_path=journal_path,
+                           fetch=FakeFeed({}), notifier=SilentNotifier())
+    assert engine._daily_stops.get((engine._session_date(), "long")) == 2
+
+
+def test_entry_bar_pre_entry_range_cannot_stop_or_trail():
+    """On the entry bar, later polls must not stop the position out on the
+    bar's PRE-entry low, and must not trail off the bar's pre-entry high."""
+    closes = list(noisy_flat(40, seed=1)) + [92.0]
+    frame = make_ohlcv(closes, freq="15min")
+    # give the entry bar a violent pre-entry range: low far below any stop
+    frame.iloc[-1, frame.columns.get_loc("low")] = 60.0
+    frame.iloc[-1, frame.columns.get_loc("high")] = 120.0
+    engine = engine_with({"^GSPC": frame, "^IXIC": flat(2), "BTC-USD": flat(3)})
+    inst = engine.config.instruments["SPX"]
+    log1 = engine.evaluate_instrument(inst, frame)
+    assert any("opened long" in line for line in log1)
+    # SAME bar polled again: close (92) is above the stop -> must survive
+    log2 = engine.evaluate_instrument(inst, frame)
+    assert "SPX" in engine.broker.positions
+    assert not any("STOPPED OUT" in line for line in log2)
+    assert engine._pending_trail.get("SPX") is None     # no trail off pre-entry high
+
+
+def test_trail_arms_only_on_the_next_bar():
+    """A trail candidate computed from bar B is not active during B (its low may
+    predate the stop) — it applies when bar B+1 arrives."""
+    closes = list(noisy_flat(40, seed=1)) + [92.0]
+    entry = make_ohlcv(closes, freq="15min")
+    engine = engine_with({"^GSPC": entry, "^IXIC": flat(2), "BTC-USD": flat(3)})
+    engine.strategies["SPX"].trail_atr_mult = 1.0       # tight trail for the test
+    inst = engine.config.instruments["SPX"]
+    engine.evaluate_instrument(inst, entry)
+    assert "SPX" in engine.broker.positions
+    stop_before = engine.broker.positions["SPX"].stop_price
+
+    # bar B: the HIGH spikes (favorable) while the close stays stretched, so
+    # the position holds -> candidate computed, but stop NOT moved yet
+    run_up = make_ohlcv(closes + [92.5], freq="15min")
+    run_up.iloc[-1, run_up.columns.get_loc("high")] = 95.0
+    engine.evaluate_instrument(inst, run_up)
+    assert "SPX" in engine.broker.positions
+    assert engine.broker.positions["SPX"].stop_price == stop_before
+    assert engine._pending_trail.get("SPX") is not None
+
+    # bar B+1 arrives: the candidate is applied before stops are checked
+    next_bar = make_ohlcv(closes + [92.5, 94.5], freq="15min")
+    next_bar.iloc[-1, next_bar.columns.get_loc("low")] = 94.2
+    log = engine.evaluate_instrument(inst, next_bar)
+    assert "SPX" in engine.broker.positions
+    assert engine.broker.positions["SPX"].stop_price > stop_before
+    assert any("stop trailed to" in line for line in log)
+
+
+def test_shadow_book_has_same_bar_guard():
+    """A blocked signal whose shadow gets stopped must not re-open a new shadow
+    on the same bar (the churn that corrupted the counterfactual ledger)."""
+    frame = dip(1)
+    engine = engine_with({"^GSPC": frame, "^IXIC": flat(2), "BTC-USD": flat(3)})
+    inst = engine.config.instruments["SPX"]
+    engine._shadow_last_exit["SPX"] = (frame.index[-1], "long")
+    engine._open_shadow("SPX", "long", 92.0, type("S", (), {
+        "units": 10.0, "stop_price": 90.0, "risk_amount": 20.0})(), "mr", "test", frame.index[-1])
+    assert "SPX" not in engine.shadow.positions          # same-bar reopen refused
 
 
 def test_trend_filter_short_feed_fails_loudly():
