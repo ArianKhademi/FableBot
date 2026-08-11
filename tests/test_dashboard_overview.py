@@ -40,3 +40,19 @@ def test_render_overview_links_books_with_href():
     assert ">Adaptive</a>" in html
     # The hrefless book is listed but not wrapped in a link.
     assert "Fresh" in html and ">Fresh</a>" not in html
+
+
+def test_overview_shows_prop_status_only_for_prop_books():
+    """Futures books surface room-to-floor / BLOWN; other books show a dash."""
+    normal = _book("Equities", 100.0, [])
+    futures = _book("Futures eval", 100.0, [])
+    futures["prop"] = {"blown": False, "passed": False, "floor": 48_000.0, "room": 2_100.0}
+    blown = _book("Futures RT", -500.0, [])
+    blown["prop"] = {"blown": True, "passed": False, "floor": 48_000.0, "room": -10.0}
+
+    html = dashboard.render_overview([normal, futures, blown], "now")
+    assert "Prop rules" in html                 # column exists
+    assert "to floor" in html and "$2,100" in html
+    assert "BLOWN" in html
+    # the non-prop book gets a dash, not a fabricated number
+    assert "—" in html
