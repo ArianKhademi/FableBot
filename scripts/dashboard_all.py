@@ -16,6 +16,7 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Optional
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
@@ -31,6 +32,26 @@ def _config_for(state_dir: Path) -> Path:
     state_experiment -> config_experiment.yaml, state_experiment_trail -> ..."""
     name = state_dir.name
     return ROOT / ("config.yaml" if name == "state" else f"config_{name[len('state_'):]}.yaml")
+
+
+def _prop_status(state_dir: Path, equity: float) -> Optional[dict]:
+    """Prop-firm rule state for a futures book (None for every other book).
+    Read-only: ``room`` is measured against the live marked equity, so a book
+    creeping toward its trailing floor is visible before it blows."""
+    path = state_dir / "prop.json"
+    if not path.exists():
+        return None
+    try:
+        s = json.loads(path.read_text())
+    except Exception:
+        return None
+    floor = float(s.get("floor", 0.0))
+    return {
+        "blown": bool(s.get("blown")),
+        "passed": bool(s.get("passed_on")),
+        "floor": floor,
+        "room": equity - floor,
+    }
 
 
 def _marks(config, positions: dict) -> dict:
@@ -86,7 +107,8 @@ def main() -> int:
         dash = sd / "dashboard.html"
         href = os.path.relpath(dash, out.parent) if dash.exists() else None
         books.append({"name": cfg.name, "href": href, "account": snap["account"],
-                      "stats": snap["stats"], "equity_curve": snap["equity_curve"]})
+                      "stats": snap["stats"], "equity_curve": snap["equity_curve"],
+                      "prop": _prop_status(sd, snap["account"]["total_equity"])})
 
     if not books:
         print("No books found (no state*/portfolio.json yet). Start a bot first.", file=sys.stderr)

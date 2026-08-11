@@ -331,6 +331,21 @@ def render_overview(books: list, generated_at: str, refresh_secs: int = 150) -> 
         f'title="Open this book’s dashboard">{b["name"]}</a>'
         if b.get("href") else b["name"]
     )
+    # Prop-firm books (futures) carry a rule status: how much equity room is
+    # left to the trailing drawdown floor, or BLOWN/PASSED. For every other
+    # book the cell is a dash.
+    def prop_cell(b: dict) -> str:
+        p = b.get("prop")
+        if not p:
+            return '<td class="r muted">—</td>'
+        if p.get("blown"):
+            return '<td class="r neg"><strong>BLOWN</strong></td>'
+        room = p.get("room", 0.0)
+        label = "PASSED " if p.get("passed") else ""
+        # tight room is the thing to notice at a glance
+        klass = "neg" if room < 500 else ("" if room < 1000 else "pos")
+        return f'<td class="r {klass}">{label}{_money(room)} to floor</td>'
+
     rows = "".join(
         f'<tr><td>{name_cell(b)}</td>'
         f'<td class="r">{_money(b["account"]["total_equity"])}</td>'
@@ -339,9 +354,10 @@ def render_overview(books: list, generated_at: str, refresh_secs: int = 150) -> 
         f'<td class="r {cls(b["account"]["unrealized_pnl"])}">{_money(b["account"]["unrealized_pnl"])}</td>'
         f'<td class="r">{b["stats"]["win_rate"]:.0f}%</td>'
         f'<td class="r">{b["stats"]["count"]}</td>'
-        f'<td class="r">{b["account"]["open_count"]}</td></tr>'
+        f'<td class="r">{b["account"]["open_count"]}</td>'
+        f'{prop_cell(b)}</tr>'
         for b in books
-    ) or '<tr><td colspan="8" class="muted">no books found — start a bot first</td></tr>'
+    ) or '<tr><td colspan="9" class="muted">no books found — start a bot first</td></tr>'
 
     data = json.dumps([{"name": b["name"], "eq": [p["equity"] for p in b["equity_curve"]],
                         "color": _OVERVIEW_COLORS[i % len(_OVERVIEW_COLORS)]}
@@ -361,7 +377,8 @@ def render_overview(books: list, generated_at: str, refresh_secs: int = 150) -> 
         f"auto-refresh {int(refresh_secs)}s · paper trading</span></header>"
         "<table><thead><tr><th>Book</th><th class=\"r\">Equity</th><th class=\"r\">Return</th>"
         "<th class=\"r\">Realized</th><th class=\"r\">Unrealized</th><th class=\"r\">Win%</th>"
-        f"<th class=\"r\">Trades</th><th class=\"r\">Open</th></tr></thead><tbody>{rows}</tbody></table>"
+        f"<th class=\"r\">Trades</th><th class=\"r\">Open</th>"
+        f"<th class=\"r\">Prop rules</th></tr></thead><tbody>{rows}</tbody></table>"
         "<h2>Equity by closed-trade #</h2>"
         f"<div style=\"display:flex;flex-wrap:wrap;gap:14px;margin-bottom:6px\">{legend}</div>"
         "<div class=\"chartbox\"><canvas id=\"eq\" role=\"img\" aria-label=\"Equity trajectories by book\">"
