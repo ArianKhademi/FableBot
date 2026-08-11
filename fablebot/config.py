@@ -18,6 +18,15 @@ class AccountConfig:
     # Kills the stop-out -> re-enter cascades that turn five correct 1% losses
     # into a -5% day. None disables (default).
     max_daily_stops: int | None = None
+    # Stop management mode:
+    #   "bars"     (default) — stops tested against bar ranges; a trailed stop
+    #              arms only on the NEXT bar (bar extremes carry no ordering).
+    #   "observed" — the engine's own polled price stream carries the ordering:
+    #              trails ratchet off OBSERVED favorable extremes and arm
+    #              immediately; a stop moved during the current bar is tested
+    #              against observed closes only until the bar rolls. Pair with a
+    #              short poll_interval_minutes (e.g. 1) for responsiveness.
+    stop_mode: str = "bars"
 
 
 @dataclass

@@ -113,6 +113,17 @@ class TradingEngine:
             )
         self._prop_day: Optional[str] = None
         self._prop_last_equity: float = config.account.starting_equity
+        # Observed-price stop mode: the polled price stream carries ordering the
+        # bar range lacks. Per open position we track the favorable extreme of
+        # OBSERVED prices (poll closes + completed post-entry bars), and the bar
+        # on which the stop last moved (a stop moved mid-bar is tested against
+        # observed closes only until the bar rolls).
+        self.stop_mode = str(config.account.stop_mode).strip().lower()
+        if self.stop_mode not in ("bars", "observed"):
+            raise ValueError(f"stop_mode must be 'bars' or 'observed', got {config.account.stop_mode!r}")
+        self._obs_fav: dict[str, float] = {}
+        self._stop_bar: dict[str, object] = {}
+        self._last_bar_seen: dict[str, object] = {}
         self.strategies = self._build_strategies()
         self.last_prices: dict[str, float] = {}
         # (bar timestamp, direction) of the last exit per instrument — used to
@@ -243,24 +254,56 @@ class TradingEngine:
         # include pre-entry range the trade never lived through — stop-check
         # and track excursions against the current price (close) only.
         on_entry_bar = bar_ts is not None and self._entry_bar.get(key) == bar_ts
-        eff_high, eff_low = (close, close) if on_entry_bar else (high, low)
+        observed = self.stop_mode == "observed"
 
-        # Apply a deferred trail candidate once its source bar has passed —
-        # from now on this bar's range legitimately tests the tightened stop.
+        # Observed mode: maintain the favorable extreme of prices we have
+        # actually SEEN for this position — poll closes, plus each completed
+        # post-entry bar's extreme once the bar rolls (its whole range is
+        # post-entry, and a stop trailed from it arms for later prices only).
+        pos_now = self.broker.positions.get(key)
+        if observed and pos_now is not None:
+            is_long = pos_now.direction == "long"
+            better = max if is_long else min
+            if key not in self._obs_fav:
+                # fresh open is seeded at entry; this seeds after a restart
+                self._obs_fav[key] = close
+                self._stop_bar.setdefault(key, bar_ts)
+            elif bar_ts is not None and self._last_bar_seen.get(key) != bar_ts and len(df) >= 2:
+                prev_ts = idx[-2]
+                if self._entry_bar.get(key) != prev_ts:
+                    prev = df.iloc[-2]
+                    prev_fav = float(prev["high"]) if is_long else float(prev["low"])
+                    self._obs_fav[key] = better(self._obs_fav[key], prev_fav)
+            self._obs_fav[key] = better(self._obs_fav[key], close)
+            self._last_bar_seen[key] = bar_ts
+
+        # A stop that moved during the CURRENT bar may only be tested against
+        # observed prices (this poll's close) — the bar's low/high may predate
+        # it. Once the bar rolls, the new bar's full range is fair game.
+        stop_moved_this_bar = observed and bar_ts is not None and self._stop_bar.get(key) == bar_ts
+        close_only = on_entry_bar or stop_moved_this_bar
+        eff_high, eff_low = (close, close) if close_only else (high, low)
+
+        # Bars mode: apply a deferred trail candidate once its source bar has
+        # passed — from then on the bar range legitimately tests the stop.
+        # (Observed mode trails inline below and never defers.)
         pending = self._pending_trail.get(key)
-        if pending is not None and bar_ts is not None and pending[1] != bar_ts:
+        if not observed and pending is not None and bar_ts is not None and pending[1] != bar_ts:
             del self._pending_trail[key]
             if self.broker.tighten_stop(key, pending[0]):
                 log.append(f"{key}: stop trailed to {pending[0]:,.2f}" + self._acct())
                 journal("trail", f"stop trailed to {pending[0]:,.2f}")
 
         self.broker.update_excursions(key, eff_high, eff_low)
-        stopped = self.broker.enforce_stops(key, eff_high, eff_low, close, open_=None if on_entry_bar else bar_open)
+        stopped = self.broker.enforce_stops(key, eff_high, eff_low, close, open_=None if close_only else bar_open)
         if stopped is not None:
             # Guard bookkeeping FIRST — if journaling raises (disk full), the
             # same-bar guard and breaker must already be armed.
             self._entry_bar.pop(key, None)
             self._pending_trail.pop(key, None)
+            self._obs_fav.pop(key, None)
+            self._stop_bar.pop(key, None)
+            self._last_bar_seen.pop(key, None)
             if bar_ts is not None:
                 self._last_exit[key] = (bar_ts, stopped.direction)
                 if stopped.pnl < 0:
@@ -289,6 +332,9 @@ class TradingEngine:
             trade = self.broker.close_position(key, close, signal.reason)
             self._entry_bar.pop(key, None)
             self._pending_trail.pop(key, None)
+            self._obs_fav.pop(key, None)
+            self._stop_bar.pop(key, None)
+            self._last_bar_seen.pop(key, None)
             if bar_ts is not None:
                 self._last_exit[key] = (bar_ts, trade.direction)
             log.append(f"{key}: closed {trade.direction} {trade.pnl:+,.2f} ({signal.reason})" + self._acct())
@@ -360,6 +406,12 @@ class TradingEngine:
                 )
                 if bar_ts is not None:
                     self._entry_bar[key] = bar_ts
+                if observed:
+                    # Seed the observed stream at the entry price; the initial
+                    # stop "moved" on this bar, so it's close-only tested here.
+                    self._obs_fav[key] = close
+                    self._stop_bar[key] = bar_ts
+                    self._last_bar_seen[key] = bar_ts
                 size_str = (f"{sized.contracts} contract(s)" if inst.contract_multiplier
                             else f"{sized.units:.4f}")
                 log.append(
@@ -372,28 +424,42 @@ class TradingEngine:
         else:
             journal("hold", signal.reason)
 
-        # Trailing stop, DEFERRED: compute this bar's chandelier candidate from
-        # its (post-entry) extreme, but only ARM it once the next bar arrives —
-        # a stop derived from this bar's high must never be tested against this
-        # same bar's low, which may have printed before the stop existed. The
-        # entry bar itself never trails (its extremes predate the position).
         position = self.broker.positions.get(key)
-        if position is not None and not opened_this_cycle and bar_ts is not None and not on_entry_bar:
+        if position is not None and not opened_this_cycle and bar_ts is not None:
             trail_mult = strategy.current_trail_mult(df, position.direction)
             if trail_mult and signal.atr > 0:
-                extreme = high if position.direction == "long" else low
                 offset = signal.atr * trail_mult
-                candidate = extreme - offset if position.direction == "long" else extreme + offset
-                tightens = (candidate > position.stop_price) if position.direction == "long" \
-                    else (candidate < position.stop_price)
-                if tightens:
-                    prev = self._pending_trail.get(key)
-                    if prev is None or prev[1] != bar_ts:
-                        self._pending_trail[key] = (candidate, bar_ts)
-                    else:
-                        better = max(prev[0], candidate) if position.direction == "long" \
-                            else min(prev[0], candidate)
-                        self._pending_trail[key] = (better, bar_ts)
+                if observed:
+                    # OBSERVED trailing: ratchet off the favorable extreme of
+                    # prices we've actually seen (ordering known), and arm
+                    # IMMEDIATELY — any future observed price is post-stop by
+                    # construction. Entry-bar trailing is allowed here because
+                    # obs_fav contains only post-entry observations.
+                    fav = self._obs_fav.get(key, close)
+                    candidate = fav - offset if position.direction == "long" else fav + offset
+                    if self.broker.tighten_stop(key, candidate):
+                        self._stop_bar[key] = bar_ts
+                        log.append(f"{key}: stop trailed (observed) to {candidate:,.2f}" + self._acct())
+                        journal("trail", f"stop trailed (observed) to {candidate:,.2f}")
+                elif not on_entry_bar:
+                    # BARS trailing, DEFERRED: compute this bar's chandelier
+                    # candidate from its extreme, but only ARM it once the next
+                    # bar arrives — a stop derived from this bar's high must
+                    # never be tested against this same bar's low, which may
+                    # have printed before the stop existed. The entry bar never
+                    # trails (its extremes predate the position).
+                    extreme = high if position.direction == "long" else low
+                    candidate = extreme - offset if position.direction == "long" else extreme + offset
+                    tightens = (candidate > position.stop_price) if position.direction == "long" \
+                        else (candidate < position.stop_price)
+                    if tightens:
+                        prev = self._pending_trail.get(key)
+                        if prev is None or prev[1] != bar_ts:
+                            self._pending_trail[key] = (candidate, bar_ts)
+                        else:
+                            better = max(prev[0], candidate) if position.direction == "long" \
+                                else min(prev[0], candidate)
+                            self._pending_trail[key] = (better, bar_ts)
         return log
 
     # -- shadow book ----------------------------------------------------------
@@ -430,7 +496,10 @@ class TradingEngine:
     ) -> None:
         """Advance the shadow position for this instrument, if any, with the
         same stop/exit/entry-bar/deferred-trail semantics as the real book —
-        anything less and the counterfactual is graded on different physics."""
+        anything less and the counterfactual is graded on different physics.
+        NOTE: shadows always use bars/deferred trailing, even when the real
+        book runs stop_mode=observed — a small conservative divergence, traded
+        for keeping this replica simple enough to stay correct."""
         if key not in self.shadow.positions:
             return
         on_entry_bar = bar_ts is not None and self._shadow_entry_bar.get(key) == bar_ts

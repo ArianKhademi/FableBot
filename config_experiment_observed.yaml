@@ -1,0 +1,88 @@
+# Experiment book #9 — 15m MR + trail, with OBSERVED-PRICE stop management.
+#
+# Identical strategy to the constant-trail book; the ONE difference is HOW stops
+# are managed. Bar mode (every other book) can only trail off bar extremes whose
+# internal ordering is unknown, so a trailed stop must wait for the next bar to
+# arm. Observed mode uses the engine's own polled price stream — each poll's
+# price is a fact with a timestamp — so the trail ratchets intrabar off observed
+# favorable extremes and arms instantly, and a stop is never tested against a
+# price that may have printed before it existed. Poll every 1 minute for
+# resolution. A/B this book against the trail book to measure what intrabar
+# stop responsiveness is actually worth live.
+#
+#   python3 scripts/run_bot.py --config config_experiment_observed.yaml --state-dir state_experiment_observed
+
+name: "Experiment — 15m MR + trail (observed stops)"
+
+account:
+  starting_equity: 100000.0
+  risk_per_trade: 0.01
+  # Observed-price stop mode: trails ratchet off the engine's own polled price
+  # stream (ordering known) and arm immediately; a stop moved mid-bar is tested
+  # against observed closes only until the bar rolls. The 1-minute poll is what
+  # gives the stream its resolution.
+  stop_mode: observed
+  max_daily_stops: 2
+
+schedule:
+  timezone: "America/New_York"
+  morning_report: "07:00"
+  evening_report: "21:00"
+  poll_interval_minutes: 1
+
+correlation:
+  groups:
+    equity: [SPY, QQQ, IWM, DIA, XLK]
+  max_same_direction_per_group: 2
+
+data:
+  source: yfinance
+  cache_dir: state_experiment_observed/data_cache
+  cache_ttl_minutes: 1440
+
+costs:
+  friction_bps: 3.0
+
+# Same mean-reversion entries as config_experiment.yaml, but trail_atr_mult is set
+# so the broker ratchets the stop toward price as the trade reverts (locking
+# profit; stops only ever tighten).
+instruments:
+  SPY:
+    symbol: "SPY"
+    name: "S&P 500 ETF"
+    strategy: mean_reversion
+    timeframe: "15m"
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 3.0}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5], trail_atr_mult: [2.0, 5.0]}
+
+  QQQ:
+    symbol: "QQQ"
+    name: "Nasdaq 100 ETF"
+    strategy: mean_reversion
+    timeframe: "15m"
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 3.0}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5], trail_atr_mult: [2.0, 5.0]}
+
+  IWM:
+    symbol: "IWM"
+    name: "Russell 2000 ETF"
+    strategy: mean_reversion
+    timeframe: "15m"
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 3.0}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5], trail_atr_mult: [2.0, 5.0]}
+
+  DIA:
+    symbol: "DIA"
+    name: "Dow Jones ETF"
+    strategy: mean_reversion
+    timeframe: "15m"
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 3.0}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5], trail_atr_mult: [2.0, 5.0]}
+
+  XLK:
+    symbol: "XLK"
+    name: "Technology Sector ETF"
+    strategy: mean_reversion
+    timeframe: "15m"
+    params: {lookback: 20, entry_z: 2.0, exit_z: 0.5, atr_period: 14, atr_stop_mult: 2.0, trail_atr_mult: 3.0}
+    param_bounds: {lookback: [10, 40], entry_z: [1.5, 3.0], exit_z: [0.2, 1.0], atr_stop_mult: [1.5, 3.5], trail_atr_mult: [2.0, 5.0]}
