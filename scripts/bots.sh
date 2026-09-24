@@ -8,7 +8,7 @@
 #   scripts/bots.sh stop           # stop all bots (kills the session)
 #   scripts/bots.sh stop trail     # stop one bot by name
 #   scripts/bots.sh restart mr     # restart one bot by name
-#   scripts/bots.sh logs futures   # tail one bot's log
+#   scripts/bots.sh logs trail     # tail one bot's log
 #
 # Each bot keeps its own tmux WINDOW (named) and its own log file, so nothing is
 # ever "blindly killed" — `status` names every bot, whether its window is alive,
@@ -29,8 +29,6 @@ BOTS=(
   "breaker|config_experiment_adaptive.yaml|state_experiment_adaptive|bot_breaker.log"
   "tfboth|config_experiment_trendfilter.yaml|state_experiment_trendfilter|bot_trendfilter.log"
   "tfshorts|config_experiment_trendfilter_shorts.yaml|state_experiment_trendfilter_shorts|bot_trendshorts.log"
-  "futures|config_experiment_futures.yaml|state_experiment_futures|bot_futures.log"
-  "futuresrt|config_experiment_futures_rt.yaml|state_experiment_futures_rt|bot_futures_rt.log"
   "observed|config_experiment_observed.yaml|state_experiment_observed|bot_observed.log"
 )
 
