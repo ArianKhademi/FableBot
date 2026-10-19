@@ -1,0 +1,11 @@
+# Direct versions from the audited offline baseline. Reference runtime: Python 3.12.
+# requirements.txt also locks transitive dependencies and distribution hashes.
+pandas==2.3.3
+numpy==2.0.2
+PyYAML==6.0.3
+yfinance==1.2.0
+requests==2.32.5
+pytest==8.4.2
+# Compatibility constraint: six 1.15 from the legacy Python 3.9 environment
+# cannot provide six.moves on Python 3.12 (used by python-dateutil/pandas).
+six==1.17.0

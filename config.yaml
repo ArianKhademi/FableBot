@@ -3,8 +3,8 @@ name: "FableBot — main"
 
 account:
   starting_equity: 100000.0
-  # Hard per-trade risk budget: every trade risks exactly this fraction of
-  # equity. The stop is priced so hitting it loses this much, no exceptions.
+  # Per-trade sizing budget. Stop fills can exceed it after gaps or slippage.
+  # The allowed range is greater than zero and at most 0.01 (1%).
   risk_per_trade: 0.01
 
 schedule:

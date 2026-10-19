@@ -1,14 +1,17 @@
 # Using WRDS / CRSP daily data for the search
 
-yfinance is fine for the *live* feed, but its daily history is shallow and the
-adjustments are rough — which is part of why nothing has cleared the gate. If you
-have WRDS access, you can feed the **optimizer and genome search** clean, deep,
-survivorship-bias-free CRSP daily bars instead. The live feed stays on
-yfinance/Binance; only the history/search path reads the CSVs.
+The research adapters can read locally supplied daily CSVs, including exports
+from CRSP through WRDS. The live feed is unchanged. The public synthetic demo
+does not use this interface or require any vendor data.
 
-> **Licensing.** WRDS data is licensed through your institution, typically for
-> academic research. Confirm your use is permitted before wiring it in. This repo
-> only *reads* CSVs you place locally — it never redistributes WRDS data.
+> **Data rights:** use only data you are entitled to access under your
+> institution's and vendor's agreements. Those agreements are not part of this
+> repository. Do not commit exports, caches, credentials, or real-data screenshots.
+> A code license would not grant redistribution rights to third-party data.
+
+The repository includes a CSV reader and streaming ingester, not a WRDS download
+client. The fixed ticker list is not a point-in-time universe: importing CRSP does
+not by itself eliminate survivorship bias or adjustment errors.
 
 ## 1. Export the data
 
@@ -52,7 +55,8 @@ bars for any symbol with a CSV from `data/`, and the live `run_bot` is unchanged
 
 ## Scope
 
-This improves the *quality of the search data*, not its outcome — clean data
-removes the "bad data" excuse and makes the gate's verdicts trustworthy; it does
-not by itself manufacture a profitable strategy. Intraday history (1h/4h) still
-comes from the live sources; CSV covers daily only.
+CSV history covers daily bars only; intraday history still uses the configured
+network source. Close-only input is supported for compatibility, but filling
+missing OHLC from the close cannot reproduce intrabar stop behavior. Check input
+provenance, corporate actions and universe construction before interpreting a
+backtest. Better data alone does not validate a strategy.

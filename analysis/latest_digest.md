@@ -1,3 +1,6 @@
+> Historical paper-trading record, not a current performance claim or a reproducible benchmark.
+> Raw account/data files are intentionally not included. See [validation limitations](../docs/validation.md).
+
 # FableBot performance digest
 
 Period: 2026-06-11 to 2026-06-12

@@ -3,11 +3,9 @@
 # Run it with its own state so it never touches the main book:
 #   python3 scripts/run_bot.py --config config_experiment.yaml --state-dir state_experiment
 #
-# Hypothesis: mean_reversion is the only strategy that's been profitable live so
-# far (15m, +$3k, 64% win on SPX/NDX), so lean into it — run 15m mean_reversion
-# across a basket of liquid equity-index ETFs on a fresh $100k and watch how it
-# does over time. Same immutable risk engine (1% stop, ATR sizing, correlation
-# filter). The main book is left exactly as it is.
+# Historical paper experiment: test 15m mean reversion across a broader basket.
+# Its own $100k paper account uses the same 1% sizing budget, ATR stops and
+# correlation filter. This configuration does not establish profitability.
 
 name: "Experiment — 15m mean-reversion"
 

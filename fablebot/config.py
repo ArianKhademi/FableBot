@@ -7,6 +7,8 @@ from pathlib import Path
 
 import yaml
 
+from .risk import validate_positive_finite, validate_risk_budget
+
 
 @dataclass
 class AccountConfig:
@@ -27,6 +29,10 @@ class AccountConfig:
     #              against observed closes only until the bar rolls. Pair with a
     #              short poll_interval_minutes (e.g. 1) for responsiveness.
     stop_mode: str = "bars"
+
+    def __post_init__(self) -> None:
+        validate_positive_finite(self.starting_equity, "starting_equity")
+        validate_risk_budget(self.risk_per_trade)
 
 
 @dataclass

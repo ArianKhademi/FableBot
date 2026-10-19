@@ -50,7 +50,7 @@ def test_every_position_carries_a_stop_on_the_losing_side():
 
 def test_gap_protection_cannot_be_outrun():
     """Even if price never prints the stop level, a loss reaching the risk
-    budget is force-closed. The 'no exceptions' in 'hard 1% stop'."""
+    budget is force-closed. The realized loss can still exceed that budget."""
     broker = PaperBroker(100_000.0)
     broker.open_position(
         Position(

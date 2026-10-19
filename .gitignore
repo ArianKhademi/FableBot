@@ -17,3 +17,5 @@ analysis/latest_proposals.md
 # secrets (PAT for the nightly reviewer); keep tokens out of git entirely
 .env
 secrets.env
+.env.*
+demo-output*/

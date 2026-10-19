@@ -8,8 +8,8 @@ as for every other strategy.
 
 ML is the easiest thing in the engine to overfit, so it earns nothing for free:
 the model is fit on the *train* split only and judged out-of-sample, then must
-clear the Workstream-A gate (folds + perturbation + embargoed held-out +
-deflated Sharpe) on data it never saw — see ``fablebot.ml.validate_ml``.
+run the research gate (folds, reseed stability, optional held-out and DSR
+checks). See ``validate_ml`` and docs/validation.md for skipped-check behavior.
 """
 
 from __future__ import annotations
@@ -332,7 +332,7 @@ def validate_ml(search_df, holdout_df, inst, current_genome, rng,
     the fold's eval half, vs the current strategy. Perturbation: retrain with
     different seeds — a real edge survives reseeding. Held-out: train on the
     search slice, confirm on the embargoed holdout. Plus the deflated-Sharpe
-    correction. ML clears the same bar as everything else, on data it never saw.
+    correction. The verdict flags skipped DSR or holdout checks; see docs/validation.md.
     """
     from .backtest import run_backtest
     from .optimizer import (
@@ -367,7 +367,7 @@ def validate_ml(search_df, holdout_df, inst, current_genome, rng,
             reseeded.append(r.oos_sharpe)
     median_reseed = float(np.median(reseeded)) if reseeded else float("-inf")
 
-    # held-out: fit on the whole search slice, evaluate on the embargoed tail
+    # held-out: fit on the first 75% of search, evaluate on the embargoed tail
     split = int(len(search_df) * 0.75)
     cand_h = _fit_and_backtest(search_df.iloc[:split], holdout_df, inst, risk_per_trade, 0, model_kwargs, friction_bps) if holdout_df is not None else None
     curr_h = None
@@ -381,8 +381,11 @@ def validate_ml(search_df, holdout_df, inst, current_genome, rng,
         except Exception:
             curr_h = None
 
+    # Preserve the legacy qualification rule, but distinguish a skipped check
+    # from a computed probability. The 1.0 sentinel alone is not evidence.
     dsr = 1.0
-    if main is not None and n_trials >= 10:
+    dsr_checked = main is not None and n_trials >= 10
+    if dsr_checked:
         dsr = deflated_sharpe_ratio(equity_returns(main.oos_equity_curve), n_trials, sr_std_perbar)
 
     h_cand = cand_h[0] if cand_h else float("-inf")
@@ -394,6 +397,9 @@ def validate_ml(search_df, holdout_df, inst, current_genome, rng,
     )
     dsr_ok = dsr >= DSR_THRESHOLD
 
+    dsr_label = f"{dsr:.3f}" if dsr_checked else "not checked"
+    holdout_label = f"held-out {h_cand:.3f} > {h_curr:.3f}" if holdout_df is not None else "held-out not checked"
+
     if not folds_ok:
         reason = f"regime test failed: beat current in {folds_won}/{folds_valid} folds"
     elif not perturb_ok:
@@ -403,9 +409,20 @@ def validate_ml(search_df, holdout_df, inst, current_genome, rng,
     elif not holdout_ok:
         reason = f"held-out failed: model {h_cand:.3f} vs current {h_curr:.3f}"
     else:
-        reason = f"won {folds_won}/{folds_valid} folds; reseed-stable; held-out {h_cand:.3f} > {h_curr:.3f}; DSR {dsr:.3f}"
+        reason = f"won {folds_won}/{folds_valid} folds; reseed-stable; {holdout_label}; DSR {dsr_label}"
+
+    limitations = []
+    if not dsr_checked:
+        limitations.append("DSR not checked (requires a valid trial and at least 10 effective trials)")
+    if holdout_df is None:
+        limitations.append("held-out confirmation not checked (no holdout supplied)")
+    if limitations:
+        reason += "; " + "; ".join(limitations)
 
     return {
+        "deflated_sharpe_checked": dsr_checked,
+        "holdout_checked": holdout_df is not None,
+        "limitations": limitations,
         "qualified": folds_ok and perturb_ok and holdout_ok and dsr_ok,
         "folds_won": folds_won, "folds_valid": folds_valid,
         "candidate_oos_sharpe": candidate_oos, "baseline_oos_sharpe": baseline_oos,

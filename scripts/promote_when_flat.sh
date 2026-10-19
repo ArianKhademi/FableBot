@@ -6,7 +6,7 @@
 # the instrument is open, and idempotent (no-op once the PR is ready or merged).
 #
 # Cron (after the 21:00 evening recap, so it reflects the day's closes):
-#   15 21 * * * /Users/ariankhademi/Documents/Business/FableBot/scripts/promote_when_flat.sh >> /Users/ariankhademi/Documents/Business/FableBot/logs/ndx_watch.log 2>&1
+#   15 21 * * * /path/to/FableBot/scripts/promote_when_flat.sh >> /path/to/FableBot/logs/ndx_watch.log 2>&1
 #
 #   promote_when_flat.sh [INSTRUMENT] [BRANCH]
 #   defaults: NDX  claude/ndx-daily-when-flat

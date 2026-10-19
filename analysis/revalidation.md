@@ -1,3 +1,6 @@
+> Historical paper-trading record, not a current performance claim or a reproducible benchmark.
+> Raw account/data files are intentionally not included. See [validation limitations](../docs/validation.md).
+
 # Re-validation of old-qualified proposals under the new gate
 
 Friction: 3.0 bps. Tested 984 proposals that qualified under the old gate.
@@ -17,4 +20,4 @@ Cull stage totals (where the old survivors now fail):
 - deflated_sharpe: 354
 - trade_floor: 75
 
-Applied: demoted 984 proposals to 'rejected' in /Users/ariankhademi/Documents/Business/FableBot/state/proposals.jsonl.
+Applied: demoted 984 proposals to 'rejected' in `state/proposals.jsonl`.

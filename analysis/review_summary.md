@@ -1,3 +1,6 @@
+> Historical paper-trading record, not a current performance claim or a reproducible benchmark.
+> Raw account/data files are intentionally not included. See [validation limitations](../docs/validation.md).
+
 # Nightly review — 2026-06-12
 
 **Outcome: no change warranted.**
