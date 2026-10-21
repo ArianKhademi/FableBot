@@ -6,8 +6,9 @@ does not use this interface or require any vendor data.
 
 > **Data rights:** use only data you are entitled to access under your
 > institution's and vendor's agreements. Those agreements are not part of this
-> repository. Do not commit exports, caches, credentials, or real-data screenshots.
-> A code license would not grant redistribution rights to third-party data.
+> repository. Do not commit exports, caches, credentials, or screenshots of vendor
+> price data. The showcase includes only aggregate paper-activity counts and dates.
+> A code license does not grant redistribution rights to third-party data.
 
 The repository includes a CSV reader and streaming ingester, not a WRDS download
 client. The fixed ticker list is not a point-in-time universe: importing CRSP does

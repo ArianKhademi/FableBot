@@ -8,7 +8,29 @@ gradient-boosted trees, tabular Q-learning, and a decision journal.
 The project demonstrates software design and experimentation. It does not
 establish profitable trading performance, and it has no real-money broker adapter.
 
-## Start with the offline demo
+## Explore the showcase
+
+[**Interactive preview**](https://ariankhademi.github.io/FableBot/) ·
+[**39-second recording**](https://ariankhademi.github.io/FableBot/media/fablebot-showcase.mp4)
+
+[![Historical paper-record review](docs/media/fablebot-showcase.png)](https://ariankhademi.github.io/FableBot/)
+
+The preview uses aggregate counts from ten saved paper-trading books covering
+**June 10–September 15, 2026 UTC**. Inspect recorded activity by book, instrument,
+and strategy. Four saved histories omit later records found in their pre-rollback
+archives; the preview identifies these gaps. It is a software showcase, not a
+verified performance track record or a live account view.
+
+Only aggregate counts, dates, and labels are included. Raw trade records, market
+prices, account balances, and vendor datasets remain private. See
+[showcase provenance and limitations](docs/showcase.md).
+
+For an offline copy, open [`docs/index.html`](docs/index.html) from a local clone;
+the recording is [`docs/media/fablebot-showcase.mp4`](docs/media/fablebot-showcase.mp4).
+No setup, login, or external assets are needed. `index.html` is the complete
+preview, not an unfilled template.
+
+## Run the reproducible synthetic demo and tests
 
 The reference environment is **Python 3.12**. From the repository root:
 
@@ -45,8 +67,9 @@ path and never reads your configuration, credentials, or account state.
 | Research | Train/evaluation splits, time-block validation, perturbation and optional held-out/DSR checks |
 | Observability | Decision journals, shadow positions, reports, paper-account dashboards |
 
-These are distinct capabilities: the introductory demo exercises named/DSL
-strategies and backtesting, not the optimizer or learned models. Tests cover all
+These are distinct capabilities: the synthetic demo exercises named/DSL
+strategies and backtesting, while the showcase inspects saved activity counts.
+Neither exercises the optimizer or learned models. Tests cover all
 of those components. See the [architecture](docs/PROJECT_OVERVIEW.md).
 
 ## Risk and research limitations
@@ -95,18 +118,23 @@ To intentionally refresh the lock with uv, review the resulting dependency diff:
 uv pip compile requirements.in --python-version 3.12 --universal --generate-hashes --no-annotate --output-file requirements.txt
 ```
 
-The GitHub Actions definition installs the lock, checks dependencies, and runs
+The GitHub Actions workflow installs the lock, checks dependencies, and runs
 pytest and the demo in a Linux network namespace without network access. Local
 tests also fail unexpected Python socket connections. Adding a workflow file does
-not mean a hosted run has passed; it runs after a push or pull request.
+not mean a hosted run has passed; check the [latest runs](https://github.com/ArianKhademi/FableBot/actions/workflows/offline.yml).
 
 ## Code and data rights
 
-A code license has **not yet been selected**. Publication and license choice
-remain owner decisions. Market data has separate provider terms; a code license
-would not grant rights to redistribute it. [Data guidance](docs/wrds-data.md)
-covers the local CSV interface. No WRDS/CRSP export, cache, account state, or real
-market-data screenshot belongs in the public demo. Keyless access does not imply
+FableBot is **source-available under [PolyForm Noncommercial 1.0.0](LICENSE)**.
+The license permits noncommercial use and includes specific permitted purposes;
+see its complete terms. Distributing copies requires preserving the license
+terms and the attribution in [NOTICE](NOTICE). It is not an unrestricted
+open-source license. Dependencies retain their own licenses.
+
+Market data has separate provider terms; this license does not grant rights to
+redistribute it. [Data guidance](docs/wrds-data.md) covers the local CSV interface.
+No WRDS/CRSP export, cache, account state, raw trade record, or vendor price chart
+is included in the showcase. Keyless access does not imply
 redistribution permission; see [yfinance's notice](https://ranaroussi.github.io/yfinance/).
 
 This is an educational simulation project, not financial advice. Simulated or
