@@ -1,0 +1,34 @@
+name: Offline checks
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.12'
+      - name: Install locked dependencies in an isolated environment
+        run: |
+          python -m venv .venv
+          .venv/bin/python -m pip install --require-hashes -r requirements.txt
+          .venv/bin/python -m pip check
+      - name: Test with network disabled at the OS boundary
+        run: |
+          sudo unshare --net -- env PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 FABLEBOT_WEBHOOK_URL= \
+            "$PWD/.venv/bin/python" -m pytest -q
+      - name: Run the synthetic CLI with network disabled
+        run: |
+          sudo unshare --net -- "$PWD/.venv/bin/python" scripts/demo.py --output demo-output
+      - name: Check whitespace
+        run: git diff --check

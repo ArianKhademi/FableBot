@@ -1,33 +1,33 @@
-# Risk rules — the constitution
+# Risk rules
 
-These invariants are **not tunable**. The learning loop may rewrite strategy
-logic, add filters, change parameters, even replace a strategy wholesale —
-but every proposal must leave these intact, and the test suite enforces them
-(`tests/test_invariants.py`). A PR that touches any of these must say so in
-its title and will not be auto-anything: it waits for an explicit human yes.
+These are project policy and tested software constraints for paper trading.
+Changes to them require explicit human review. A passing test suite does not
+make a stop fill certain or establish a maximum realized loss.
 
-1. **Hard per-trade stop.** Every position has a stop at entry, priced so
-   that hitting it loses no more than `account.risk_per_trade` of equity.
-   No strategy may open a position without one, widen one after entry, or
-   override the broker's stop enforcement. Trailing stops that only ratchet
-   toward price (tightening risk, locking in profit) are allowed — the
-   direction of stop movement is one-way, and that is enforced in code.
+1. **Stop at entry.** Strategies routed through the engine/backtester receive
+   an ATR-based stop. The intended loss at that stop is the sizing budget before
+   execution friction. Gap fills, slippage and polling delays can exceed it.
+   Strategy hooks must not bypass enforcement or widen a placed stop; trailing
+   helpers only tighten it.
+2. **ATR-based sizing.** Units equal risk budget divided by stop distance.
+   Futures simulations round down to whole contracts and can apply a contract
+   cap. No martingale, averaging down or fixed-size substitution.
+3. **Stop enforcement.** The paper broker checks modeled bar ranges (or the
+   engine's observed-price mode) and closes on a stop or risk-budget breach.
+   This is simulated execution, not protection against a real market gap.
+4. **One position per instrument.** The paper broker rejects pyramiding.
+5. **Configured correlation groups.** The engine blocks additional
+   same-direction positions at the configured group limit. Groups are manually
+   assigned categories, not dynamically estimated correlations.
+6. **Paper only.** No real-money broker adapter. Adding one is a separate human
+   decision outside the research/reviewer loop.
+7. **Risk budget ceiling.** Account construction and sizing reject non-finite,
+   zero, negative, or greater-than-1% risk fractions. Finite positive equity and
+   stop-distance inputs are required. This ceiling controls intended sizing,
+   not realized losses after execution.
 
-2. **ATR-based sizing.** Position size is always risk budget ÷ stop
-   distance. No fixed sizes, no martingale, no "double up after a loss."
-
-3. **Gap protection stays on.** The broker force-closes any position whose
-   unrealized loss reaches its risk budget, even if the stop price never
-   printed. This check cannot be bypassed or made conditional.
-
-4. **One position per instrument.** No pyramiding, no averaging down.
-
-5. **The correlation filter may be tuned, not deleted.** Its group
-   membership and threshold are fair game with evidence; removing the
-   concept of correlated-exposure limits is not.
-
-6. **Paper trading only.** No change may wire the bot to a live broker or
-   real funds. That decision belongs to a human, made outside this loop.
-
-7. **Risk budget ceiling.** `risk_per_trade` may never exceed 0.01 (1%).
-   The learning loop may propose lowering it, never raising it.
+The relevant regression tests include `tests/test_invariants.py`,
+`tests/test_risk.py`, `tests/test_portfolio.py`, `tests/test_trailing.py`,
+`tests/test_observed_stops.py` and `tests/test_prop_rules.py`. Direct construction
+of a `Position` remains a low-level API; the proposal/reviewer workflow is not a
+security sandbox around arbitrary code changes.

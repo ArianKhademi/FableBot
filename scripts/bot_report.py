@@ -12,7 +12,7 @@ it only reads portfolio.json, never touches trading state.
   python3 scripts/bot_report.py --no-marks         # skip live price fetch (faster)
 
 Suggested cron (Apple python so macOS lets cron read/write files; 7:30am daily):
-  30 7 * * * cd /Users/<you>/Documents/Business/FableBot && /usr/bin/python3 scripts/bot_report.py >> logs/bot_report.log 2>&1
+  30 7 * * * cd /path/to/FableBot && /usr/bin/python3 scripts/bot_report.py >> logs/bot_report.log 2>&1
 """
 
 import argparse

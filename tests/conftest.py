@@ -4,8 +4,26 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import pytest
+import socket
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+
+@pytest.fixture(autouse=True)
+def offline_test_boundary(monkeypatch):
+    """Unexpected network attempts fail even if application code catches them."""
+    attempted = []
+
+    def blocked(*args, **kwargs):
+        attempted.append(True)
+        raise AssertionError("Tests must use synthetic data and mocked network clients")
+
+    monkeypatch.setenv("FABLEBOT_WEBHOOK_URL", "")
+    monkeypatch.setattr(socket.socket, "connect", blocked)
+    monkeypatch.setattr(socket.socket, "connect_ex", blocked)
+    monkeypatch.setattr(socket, "getaddrinfo", blocked)
+    yield
+    assert not attempted, "A test attempted network access (even if its exception was caught)"
 
 
 def make_ohlcv(closes, start="2026-01-01", freq="1h", spread=0.5) -> pd.DataFrame:

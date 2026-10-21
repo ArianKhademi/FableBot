@@ -16,7 +16,7 @@ def test_backtest_trend_follower_profits_on_clean_trend():
     assert result.total_pnl > 0
 
 
-def test_backtest_losses_capped_at_risk_budget():
+def test_backtest_whipsaw_series_keeps_positive_equity():
     # Whipsaw series designed to stop trades out
     rng = np.random.default_rng(11)
     closes = 100 + np.cumsum(rng.normal(0, 2.0, 400))
@@ -26,8 +26,7 @@ def test_backtest_losses_capped_at_risk_budget():
         {"entry_channel": 20, "exit_channel": 10, "atr_period": 14, "atr_stop_mult": 2.5},
     )
     result = run_backtest(df, strat, starting_equity=100_000.0, risk_per_trade=0.01)
-    # No single losing trade should meaningfully exceed 1% of equity at entry.
-    # (Small tolerance for the equity base shifting between trades.)
+    # This fixture leaves positive equity; it does not prove a per-trade loss cap.
     assert result.trades > 0
     assert result.max_drawdown_pct < 100.0
 

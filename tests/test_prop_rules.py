@@ -89,10 +89,10 @@ def test_futures_sizing_zero_contracts_when_too_expensive():
 
 
 def test_futures_sizing_respects_contract_cap():
-    s = size_position(equity=50_000, risk_per_trade=0.02, entry_price=3_000.0,
+    s = size_position(equity=50_000, risk_per_trade=0.01, entry_price=3_000.0,
                       atr=4.0, atr_stop_mult=2.0, direction="long",
                       contract_multiplier=5.0, max_contracts=3)
-    assert s.contracts == 3                            # 25 affordable, capped at 3
+    assert s.contracts == 3                            # 12 affordable, capped at 3
 
 
 # -- engine integration ------------------------------------------------------

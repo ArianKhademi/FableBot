@@ -9,6 +9,20 @@ risk budget divided by the volatility-scaled stop distance.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
+from numbers import Real
+
+
+def validate_positive_finite(value: float, name: str) -> None:
+    if isinstance(value, bool) or not isinstance(value, Real) or not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a finite positive number")
+
+
+def validate_risk_budget(risk_per_trade: float) -> None:
+    """Enforce the configured sizing budget, not a guarantee on realized losses."""
+    validate_positive_finite(risk_per_trade, "risk_per_trade")
+    if risk_per_trade > 0.01:
+        raise ValueError("risk_per_trade must not exceed 0.01 (1%)")
 
 
 @dataclass
@@ -40,19 +54,26 @@ def size_position(
     ``risk_amount`` is recomputed from the actual contracts (never above the
     budget). ``contracts == 0`` means the smallest contract exceeds the risk
     budget — the caller must skip the trade, not round up."""
-    if atr != atr or atr <= 0:  # NaN <= 0 is False, so check NaN explicitly
-        raise ValueError(f"ATR must be a positive number, got {atr}")
+    validate_risk_budget(risk_per_trade)
+    validate_positive_finite(equity, "equity")
+    validate_positive_finite(atr, "ATR")
+    validate_positive_finite(atr_stop_mult, "atr_stop_mult")
+    if isinstance(entry_price, bool) or not isinstance(entry_price, Real) or not math.isfinite(entry_price):
+        raise ValueError("entry_price must be finite")
+    if contract_multiplier is not None:
+        validate_positive_finite(contract_multiplier, "contract_multiplier")
+    if max_contracts is not None and (
+        isinstance(max_contracts, bool) or not isinstance(max_contracts, int) or max_contracts < 0
+    ):
+        raise ValueError("max_contracts must be a non-negative integer")
     if direction not in ("long", "short"):
         raise ValueError(f"direction must be 'long' or 'short', got {direction!r}")
-    if equity <= 0:
-        # A depleted book must never size a position: negative risk flips the
-        # units sign and turns every rule (stops, gap checks) inside out.
-        raise ValueError(f"equity depleted ({equity:,.2f}) — refusing to size a position")
     risk_amount = equity * risk_per_trade
     stop_distance = atr * atr_stop_mult
+    validate_positive_finite(stop_distance, "stop distance")
     stop_price = entry_price - stop_distance if direction == "long" else entry_price + stop_distance
 
-    if contract_multiplier:
+    if contract_multiplier is not None:
         per_contract_risk = stop_distance * float(contract_multiplier)
         contracts = int(risk_amount // per_contract_risk)
         if max_contracts is not None:

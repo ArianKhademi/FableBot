@@ -1,550 +1,141 @@
 # FableBot
 
-A multi-instrument **paper-trading** bot that watches five markets so you don't
-have to. It runs three different strategy styles — each matched to how its
-market actually moves — sizes every position off volatility, enforces a hard 1%
-stop on every trade, and refuses to stack correlated risk-on exposure.
+A Python **paper-trading and strategy-research project**. FableBot separates
+strategy signals, position sizing, simulated execution, and research validation.
+It includes a composable strategy DSL, evolutionary and TPE search, NumPy
+gradient-boosted trees, tabular Q-learning, and a decision journal.
 
-But it doesn't just trade. FableBot **logs every decision, measures itself, and
-improves itself**: a continuous optimizer backtests new ideas around the clock,
-a staged proposal pipeline filters luck from signal with a statistically
-rigorous gate, and a nightly Claude Code review turns the surviving evidence
-into draft pull requests you approve or reject. It can change its strategies; it
-can never change its risk rules.
+The project demonstrates software design and experimentation. It does not
+establish profitable trading performance, and it has no real-money broker adapter.
 
-It no longer only *tunes* three fixed strategies. A composable strategy DSL
-turns "three strategies" into a **search space of strategies**; an evolutionary
-search breeds and refines them; gradient-boosted-tree and reinforcement-learning
-models add learned signals — and **every one of them has to clear the same
-out-of-sample gate** (deflated Sharpe, purged regime folds, an embargoed
-held-out set) before it can be proposed. See [the strategy engine](#the-strategy-engine-phase-2).
+## Explore the showcase
 
-It also sends two messages a day:
+[**Interactive preview**](https://ariankhademi.github.io/FableBot/) ·
+[**39-second recording**](https://ariankhademi.github.io/FableBot/media/fablebot-showcase.mp4)
 
-- **7am** — what's happening in the market (incl. relevant news headlines)
-- **9pm** — how the bot did
+[![Historical paper-record review](docs/media/fablebot-showcase.png)](https://ariankhademi.github.io/FableBot/)
 
-Five instruments. Two messages. Zero screen time — and a system that gets
-better while you sleep.
+The preview uses aggregate counts from ten saved paper-trading books covering
+**June 10–September 15, 2026 UTC**. Inspect recorded activity by book, instrument,
+and strategy. Four saved histories omit later records found in their pre-rollback
+archives; the preview identifies these gaps. It is a software showcase, not a
+verified performance track record or a live account view.
 
-## Strategy map
+Only aggregate counts, dates, and labels are included. Raw trade records, market
+prices, account balances, and vendor datasets remain private. See
+[showcase provenance and limitations](docs/showcase.md).
 
-| Instrument | Symbol    | Strategy           | Timeframe | Why |
-|------------|-----------|--------------------|-----------|-----|
-| S&P 500    | `^GSPC`   | Mean reversion     | 1-day     | Buy the daily dip: fade 2σ stretches from the 20-day mean. |
-| Nasdaq     | `^IXIC`   | Mean reversion     | 1-day     | Same regime as the S&P: stretch from the 20-day mean, snap back. |
-| Bitcoin    | `BTC-USD` | Momentum breakout  | 1-hour    | Crypto trends harder than indices — ride the move instead of fading it. |
-| Gold       | `GC=F`    | Trend following    | 4-hour    | Commodities move in cleaner waves; the slow timeframe filters intraday whipsaws. |
-| Oil        | `CL=F`    | Trend following    | 4-hour    | Same wave structure as gold. |
+For an offline copy, open [`docs/index.html`](docs/index.html) from a local clone;
+the recording is [`docs/media/fablebot-showcase.mp4`](docs/media/fablebot-showcase.mp4).
+No setup, login, or external assets are needed. `index.html` is the complete
+preview, not an unfilled template.
 
-The instrument list is the *starting* set, not a hard limit — it's config-driven,
-and the search continuously scans a much wider universe. Four named strategies
-ship (`mean_reversion`, `momentum_breakout`, `trend_following`, and **`regime`** —
-an ADX switch that mean-reverts in chop and rides momentum in trends), and a
-composable-DSL `genome` or a live `model` can replace any of them per instrument.
+## Run the reproducible synthetic demo and tests
 
-### Mean reversion (S&P 500, Nasdaq)
+The reference environment is **Python 3.12**. From the repository root:
 
-Price is measured as a z-score against its 20-bar mean. When an index
-stretches more than 2 standard deviations from the mean, the bot fades the
-move; it exits when price reverts back toward the mean. (Both now run daily —
-intraday index Sharpe is too noise-dominated to validate.)
-
-### Momentum breakout (Bitcoin — 1h)
-
-Donchian channel breakout: a close above the prior 20-bar high opens a long
-(below the 20-bar low opens a short). The exit is the opposite side of a
-shorter 10-bar channel, so winners are given room to trend.
-
-### Trend following (Gold, Oil — 4h)
-
-A 20/50 EMA crossover system. Cross up → long, cross down → short, with the
-position flipped on the opposite signal. Slow by design.
-
-## Risk engine
-
-- **ATR-based position sizing, per instrument.** Each trade risks a fixed
-  fraction of equity (default 1%). Size = risk budget ÷ (ATR × stop
-  multiplier). A quiet day on gold gets a bigger size than a volatile day on
-  bitcoin — risk stays constant even when volatility doesn't.
-- **Hard 1% stop. No exceptions.** Every position carries a stop priced so
-  that hitting it loses exactly the per-trade risk budget. On top of that,
-  the broker force-closes any position whose unrealized loss reaches the risk
-  budget (covers gaps past the stop). There is no "let me give it room."
-- **Trailing stops (constant or adaptive).** Any strategy can ratchet its stop
-  an ATR multiple behind price as the move works (`trail_atr_mult`), converting
-  open profit into locked-in profit. Mean-reversion can also use an **adaptive**
-  trail (`trail_near_mult`) that starts loose far from the mean and tightens as
-  price nears it. Stops only ever tighten — widening is constitutionally
-  impossible, so a dynamic multiple can't loosen a stop, only change how far
-  behind price the next candidate sits.
-- **Correlation filter.** S&P, Nasdaq, and Bitcoin are tagged `risk_on`. If
-  two of them are already long, the bot will not open a third long in the
-  group — that would double the real exposure, not diversify it.
-
-These rules live in [`RISK_RULES.md`](RISK_RULES.md) and are enforced by
-`tests/test_invariants.py`. They are **not tunable** — not by you in a hurry,
-not by the optimizer, not by the nightly reviewer.
-
-## Daily reports
-
-- **07:00 — morning briefing:** overnight move per instrument, current
-  volatility regime (ATR as % of price), open positions, what each strategy is
-  watching, and **recent news headlines per instrument** (Fed / CPI / jobs and
-  other market-moving items are flagged `*** HIGH IMPACT ***`). News is *soft
-  context only* — it never blocks or forces a trade; strategies trade on price.
-- **21:00 — evening recap:** trades closed today, win/loss count, realized and
-  unrealized P&L, and current equity.
-
-Reports print to the console, are archived under `reports/`, and are POSTed to a
-webhook if `FABLEBOT_WEBHOOK_URL` is set (works with Slack/Discord-style JSON
-webhooks).
-
-## Dashboards
-
-A self-contained, read-only HTML dashboard makes the account glanceable in a
-browser instead of the terminal — KPIs (equity, return %, realized + **live**
-unrealized P&L, win rate), an equity curve, open positions with live marks and
-stops, full trade history, per-strategy/instrument breakdowns, and an engine
-panel (genome-search progress, the proposal pipeline, cron heartbeats). It is
-**read-only** — generating or viewing it can never touch trading state.
-
-- The live bot **regenerates its own dashboard every cycle** from the marks it
-  already computed (no extra fetch), so `state/dashboard.html` is always current.
-- Generate/refresh on demand: `python3 scripts/dashboard.py --state-dir state --open`.
-- One **combined** page across all books: `python3 scripts/dashboard_all.py --open`
-  — a comparison table plus their equity curves overlaid.
-
-Each book's heading is its config `name`, so several bots are easy to tell apart.
-
-## Multiple books (live experiments)
-
-`run_bot.py --state-dir <dir>` runs a **second, fully independent** paper account
-— its own config, state, journal, and dashboard — without touching the main one.
-That makes head-to-head A/B testing trivial: same instruments, one variable
-changed, compared on separate dashboards. The bundled experiment configs:
-
-| Book | Config | State dir | Question |
-|---|---|---|---|
-| Main (live) | `config.yaml` | `state/` | the real book |
-| 15m MR | `config_experiment.yaml` | `state_experiment` | does mean-reversion generalize across ETFs? |
-| 15m MR + trail | `config_experiment_trail.yaml` | `state_experiment_trail` | does a (constant) trailing stop help? |
-| Regime (ADX) | `config_experiment_regime.yaml` | `state_experiment_regime` | does switching beat either strategy alone? |
-| 15m MR + adaptive trail | `config_experiment_adaptive.yaml` | `state_experiment_adaptive` | does *narrowing* the trail near the mean beat a constant one? |
-
-```bash
-python3 scripts/run_bot.py --config config_experiment_trail.yaml --state-dir state_experiment_trail
-```
-They run simultaneously (separate state dirs, no collision) and each is light
-(polls every few minutes).
-
-## The learning loop
-
-The bot keeps the evidence needed to get better and proposes its own
-improvements for human approval. Full design in
-[`docs/learning-loop.md`](docs/learning-loop.md).
-
-### 1. Decision journal + shadow book (always on)
-
-- **`state/journal.jsonl`** records every decision — opens, closes, stops,
-  holds, *and the signals the correlation filter blocked* — with the full
-  indicator context the strategy saw, plus **MAE/MFE** (the worst and best a
-  trade looked while open) on every closed trade.
-- **Shadow book**: blocked trades run in a parallel paper book with identical
-  sizing and stops, so the correlation filter's real cost/benefit is *measured,
-  not assumed*.
-
-### 2. Analytics (deterministic)
-
-`python3 scripts/analyze.py` computes expectancy / win rate / profit factor
-per strategy and instrument, **near-miss stop-outs** (trades up ≥50% of their
-risk before dying — an exit problem, not an entry problem), **re-entries within
-24h of a stop-out** (the whipsaw / revenge-trade pattern), and the shadow
-book's counterfactual P&L. Buckets with fewer than 20 trades are explicitly
-flagged as noise, and the reviewer is bound to respect that.
-
-### 3. Continuous optimizer (always running)
-
-`python3 scripts/optimize_loop.py` runs **walk-forward backtests forever** in
-the background, because waiting for live trades (~2–5/day) to accumulate is far
-too slow. Each trial:
-
-1. samples a random parameter set within each instrument's `param_bounds`,
-2. splits the instrument's history **75% train / 25% out-of-sample**,
-3. backtests both halves and computes an annualised **Sharpe ratio**,
-4. logs *every* trial to `state/backtest_history.jsonl` (including the current
-   config's baseline) so the record is always honest.
-
-Walk-forward is the point: a config must beat the baseline on data it was never
-fit to. High in-sample / low out-of-sample Sharpe is the signature of
-overfitting, and it's left in the log as a warning, not acted on.
-
-### 4. The proposal pipeline
-
-One good out-of-sample number can be luck, so proposals are **staged**, and
-every transition is an append-only event in `state/proposals.jsonl`:
-
-```
-trial ──(beats baseline OOS Sharpe by ≥0.15, ≥20 trades, passes deflated Sharpe)──► candidate
-candidate ──(purged regime folds + perturbation + embargoed held-out)──► qualified ──► promoted
-                                                                    └──► rejected
+```sh
+python3.12 -m venv .venv
+.venv/bin/python -m pip install --require-hashes -r requirements.txt
+.venv/bin/python -m pip check
+.venv/bin/python -m pytest -q
+.venv/bin/python scripts/demo.py --seed 7 --output demo-output
 ```
 
-- **candidate** — one walk-forward win that also clears the **deflated Sharpe
-  ratio** (its OOS edge must beat the *expected maximum* Sharpe of N null trials,
-  so the bar rises automatically with how many configs were tried — the
-  multiple-comparisons correction). Still weak evidence on its own.
-- **validation** (automatic, interleaved with the search) — three harder tests:
-  *regime robustness* across **non-overlapping, embargo-purged** folds (must win
-  ≥75% head-to-head vs the current config); *perturbation* (jitter ±10% — the
-  median must stay within tolerance of the candidate's **own** Sharpe, not merely
-  beat the baseline it already cleared); and an **embargoed held-out slice the
-  search never touched** (the candidate must beat the current config there too —
-  the test selection bias cannot game).
-- **qualified** — survived all of it. The only status the nightly reviewer may
-  act on, and even then only with strategic plausibility and a passing
-  `scripts/validate.py`.
-- **promoted / rejected** — the reviewer's recorded verdict, kept forever.
+On Windows, use `.venv\Scripts\python.exe` in place of `.venv/bin/python`.
+Dependency installation needs internet access; tests and the demo use synthetic
+inputs and mocked services. No API keys or market-data accounts are needed.
 
-The baseline each candidate is graded against is keyed to the params it
-measured and re-measured whenever the live config changes — so a promotion never
-leaves new candidates graded against a stale config.
+Open `demo-output/dashboard.html` in a browser. It contains embedded SVG charts
+and works offline. The same directory holds `summary.json` and `synthetic.csv`.
+The default seed generates 500 invented daily bars and four independent runs:
+three named strategies and a DSL equivalent of mean reversion. The summary
+includes the input checksum, trade counts, return, drawdown, and equity curves.
+Repeating the same seed in the pinned environment produces identical files.
+Use a new output directory each time; the demo refuses to overwrite an existing
+path and never reads your configuration, credentials, or account state.
 
-`python3 scripts/proposals.py` renders the live pipeline view and ends with a
-**funnel** that reconciles the whole search — trials run → how many became
-candidates → passed / rejected / awaiting — plus the candidate→qualified pass
-rate and the overall trial→qualified rate. (If that overall rate is high, the
-gate is too loose — exactly the thing the roadmap's first workstream tightens.)
+## What is implemented
 
-### 5. Nightly Claude review (proposes via PR)
+| Area | Implementation |
+| --- | --- |
+| Signals | Mean reversion, momentum breakout, EMA trend following, ADX regime switching |
+| Strategy DSL | Indicator features and composable entry/exit conditions; mutation and crossover |
+| Search | Numeric TPE suggestions and evolutionary genome search with persisted populations |
+| Learned signals | Small NumPy gradient-boosted regression trees and tabular Q-learning |
+| Simulation | ATR sizing, one position per instrument, stops, optional trailing, gap fills |
+| Research | Train/evaluation splits, time-block validation, perturbation and optional held-out/DSR checks |
+| Observability | Decision journals, shadow positions, reports, paper-account dashboards |
 
-`scripts/nightly_review.sh` (cron it after the evening recap) runs Claude Code
-headless against [`prompts/reviewer.md`](prompts/reviewer.md). The reviewer
-reads the digest, the proposal pipeline, the backtest history, and the journal
-under a constitution — burden of proof, minimum sample sizes, **at most one
-validated change per instrument per review** (the books are independent, so up
-to ~5/night stays cleanly attributable; never two on the same book, never
-bundled), and "no change" as a successful default. The pipeline view hands it a
-ready-made *shipping slate* — each instrument's single strongest qualified
-proposal. Any edit must pass `scripts/validate.py` (the full test suite *plus* a
-backtest of every instrument); only then does it open a **draft PR** whose body
-is the evidence. The running bot is untouched until you merge.
+These are distinct capabilities: the synthetic demo exercises named/DSL
+strategies and backtesting, while the showcase inspects saved activity counts.
+Neither exercises the optimizer or learned models. Tests cover all
+of those components. See the [architecture](docs/PROJECT_OVERVIEW.md).
 
-## The strategy engine (Phase 2)
+## Risk and research limitations
 
-The loop above no longer only nudges numbers inside three fixed strategies — it
-searches a space of strategies, and can learn entirely new signals. Every layer
-emits the same `Signal`s through the **unchanged risk engine** (sizing, the hard
-stop, gap protection, trailing) and must clear the same hardened gate before it
-can be proposed. Full brief: [`docs/phase-2-learning-engine.md`](docs/phase-2-learning-engine.md).
+- The default **1% is a position-sizing budget**, not a guaranteed maximum loss.
+  Gaps, slippage, and polling delays can produce larger losses. Validated account
+  configurations and sizing calls require a positive budget no greater than 1%.
+- The backtester uses signal-bar closing fills and a simple basis-point friction
+  model. It simulates one instrument at a time, not a portfolio with realistic
+  liquidity, margin, financing, or contract-roll behavior.
+- Validation is experimental. Effective trial counts use a capped heuristic;
+  short datasets may omit the holdout; repeated selection can reuse the same
+  data; annualization is keyed to timeframe rather than each asset's calendar.
+- The ML/RL training commands sample six seeds, below the ten-trial threshold for
+  the DSR check. Results explicitly flag skipped checks. Qualification is a
+  workflow label, not proof of a statistically reliable or profitable strategy.
 
-- **Composable strategy DSL** (`fablebot/dsl.py`) — a serialisable *genome*
-  (indicator palette + rule trees + risk block) that `build_strategy`
-  instantiates. The palette spans RSI, MACD, ADX/DI, Bollinger/Keltner, z-score,
-  Donchian, EMA/SMA, ATR and volume features; rules compose them with
-  threshold/cross/AND/OR logic. The three hand-written strategies are just seed
-  genomes (and reproduce bit-for-bit). Any genome can trade any symbol.
-- **Guided / evolutionary search** (`fablebot/search.py`, `scripts/evolve.py`) —
-  a genetic search over genomes (selection + crossover + mutation, seeded from
-  the seeds and any survivors on disk, **persisted so restarts resume learning**)
-  plus a dependency-free TPE Bayesian optimiser for refining an elite genome's
-  numbers.
-- **ML signal models** (`fablebot/ml.py`, `scripts/train_ml.py`) — a numpy
-  gradient-boosted-tree ensemble trained on engineered, leakage-free features to
-  predict forward returns; thresholded into entries. Fit on train only, judged
-  out-of-sample.
-- **RL agent** (`fablebot/rl.py`) — a constrained tabular Q-learning policy that
-  proposes **direction/timing only**; the risk engine still owns sizing and
-  stops. The most overfit-prone layer, gated the hardest.
-- **Parallelism** (`scripts/optimize_loop.py --workers N`) — trials run across
-  CPU cores; results are deterministic vs the serial path. `--no-throttle` for a
-  dedicated run.
-- **Config-driven universe** (`config.yaml: universe`, `scripts/evolve.py
-  --universe`) — scan many equities/ETFs/crypto; a liquidity screener ranks them.
-  Combined with the DSL, the search discovers *which symbols are worth trading*.
-- **Pluggable data** (`fablebot/data.py`) — an `OHLCVSource` interface
-  (yfinance / Stooq deep-daily / Binance deep-intraday) behind an on-disk cache,
-  with per-instrument routing; swapping feeds is a config change. A `CSVSource`
-  feeds the *search* clean local daily history (e.g. a WRDS/CRSP export) via
-  `data.csv_dir`, while the live feed stays real-time — see
-  [`docs/wrds-data.md`](docs/wrds-data.md). `scripts/ingest_wrds.py` streams a
-  multi-GB CRSP export into per-symbol, split-adjusted CSVs.
-- **Transaction costs** (`config.yaml: costs.friction_bps`) — commission +
-  slippage applied to every fill during the search, so the gate can't certify a
-  frictionless-only edge.
-- **Unified engine** (`scripts/run_engine.py`) — one orchestrator that advances
-  the numeric optimizer and the evolutionary genome search together, prints a
-  per-cycle heartbeat, and periodically puts the best evolved genomes through
-  the full gate into `genome_proposals.jsonl`. `scripts/engine_status.py` shows,
-  read-only, whether the search is learning and what has cleared the gate.
-- **Dynamic universe rotation** (`scripts/rotate_universe.py`) — a daily scan
-  scores the whole universe by the best gated edge per symbol and proposes which
-  instruments the live book should trade, instead of a fixed five. Guardrailed:
-  open positions are sticky (never force-closed to rotate), concurrency is
-  capped, and hysteresis resists churn. It recommends; the reviewer applies.
+Read [validation details](docs/validation.md) and [risk rules](RISK_RULES.md)
+before interpreting any result. Historical files under `analysis/` are dated
+paper-experiment records, not current performance evidence.
 
-## Setup (from a fresh clone)
+## Optional market-data workflows
 
-```bash
-python3 -m pip install -r requirements.txt   # Python 3.9+
-python3 -m pytest                            # sanity check — all green, no network needed
+The existing scripts can fetch Yahoo Finance, Stooq, or Binance data, maintain
+paper accounts, and run searches. They are **not offline demo commands**.
+The legacy account dashboards also load Chart.js from a CDN.
+[Operations](docs/operations.md) documents the commands, separate state
+directories, and the optional Claude/GitHub reviewer. The reviewer can edit code
+and create draft PRs; installing dependencies or running the demo never starts it.
+
+Configuration remains in `config*.yaml`. Existing strategy parameters, source
+routing, account state formats, and scheduler defaults are preserved. No process
+is automatically installed or started.
+
+## Development
+
+`requirements.in` records direct dependencies; `requirements.txt` pins the full
+resolved set with distribution hashes. The preparation lock preserves the
+installed baseline versions where available. Python 3.12 is the supported
+reference setup; the older Python 3.9 application baseline was also regression
+tested, but this lock is generated for 3.12.
+
+To intentionally refresh the lock with uv, review the resulting dependency diff:
+
+```sh
+uv pip compile requirements.in --python-version 3.12 --universal --generate-hashes --no-annotate --output-file requirements.txt
 ```
 
-**API keys / `.env`:** none required to run or search. All data sources are
-keyless — yfinance and Stooq (equities/ETFs, daily + intraday) and Binance's
-public endpoint (crypto). The only optional setting is an env var for report
-delivery:
+The GitHub Actions workflow installs the lock, checks dependencies, and runs
+pytest and the demo in a Linux network namespace without network access. Local
+tests also fail unexpected Python socket connections. Adding a workflow file does
+not mean a hosted run has passed; check the [latest runs](https://github.com/ArianKhademi/FableBot/actions/workflows/offline.yml).
 
-```bash
-export FABLEBOT_WEBHOOK_URL="https://hooks.slack.com/..."   # optional; omit to print/file only
-```
+## Code and data rights
 
-**Only for the nightly reviewer** (`scripts/nightly_review.sh`) you also need
-two CLIs on `PATH`: `claude` (Claude Code) and `gh` (GitHub). Both must
-authenticate **non-interactively**, because `cron` runs without your login
-keychain — a plain `gh auth login` is invisible to cron (this is exactly why the
-reviewer silently failed every night with "gh is not authenticated"). Set it up
-once with a token file the script sources:
+FableBot is **source-available under [PolyForm Noncommercial 1.0.0](LICENSE)**.
+The license permits noncommercial use and includes specific permitted purposes;
+see its complete terms. Distributing copies requires preserving the license
+terms and the attribution in [NOTICE](NOTICE). It is not an unrestricted
+open-source license. Dependencies retain their own licenses.
 
-```bash
-mkdir -p ~/.config/fablebot
-cat > ~/.config/fablebot/secrets.env <<'EOF'
-export GH_TOKEN=github_pat_xxx   # fine-grained PAT: Contents + Pull requests, R/W, on this repo only
-EOF
-chmod 600 ~/.config/fablebot/secrets.env
-```
+Market data has separate provider terms; this license does not grant rights to
+redistribute it. [Data guidance](docs/wrds-data.md) covers the local CSV interface.
+No WRDS/CRSP export, cache, account state, raw trade record, or vendor price chart
+is included in the showcase. Keyless access does not imply
+redistribution permission; see [yfinance's notice](https://ranaroussi.github.io/yfinance/).
 
-The script loads that file, exports `GH_TOKEN`, and runs `gh auth setup-git` so
-`git push` works over HTTPS without a keychain. (`claude` similarly needs to be
-usable headlessly under cron.) Verify it works as cron will see it — a *clean*
-environment:
-
-```bash
-env -i HOME="$HOME" PATH=/usr/bin:/bin scripts/nightly_review.sh
-```
-
-Expected **today**: `Review complete: no change warranted` and **no PR** — that's
-correct, because nothing has cleared the gate yet. A green run that opens no PR
-is success, not a failure.
-
-**Restarting is safe — you cannot lose search progress.** All state lives under
-`state/` and resumes automatically: `portfolio.json` (live positions),
-`backtest_history.jsonl` (every trial), and `population_*.json` (each genome
-population, reloaded at its saved generation). Kill and restart `run_bot` /
-`run_engine` freely. The `cycle N` counter `run_engine` prints is per-process
-and restarts at 1 — that is **cosmetic**; the startup line reports the real
-resumed state (`N trials on disk; resuming genome populations: BTC@gen1954, …`).
-
-## Running the full system
-
-There are three evidence pipelines, and they land in **different files** — which
-is why `scripts/proposals.py` (numeric only) can read zero while the genome
-search is busy:
-
-| Pipeline | Produced by | Gated by | Lands in |
-|---|---|---|---|
-| Numeric params | `run_engine` / `optimize_loop` | automatic | `state/proposals.jsonl` |
-| Evolved genomes | `run_engine` (every `--validate-every` cycles) or `evolve.py` | automatic | `state/genome_proposals.jsonl` |
-| ML / RL models | `train_ml.py` / `train_rl.py` | automatic | `state/ml_proposals.jsonl` / `rl_proposals.jsonl` |
-| Universe rotation | `rotate_universe.py` | guardrails | `state/rotation_proposals.jsonl` |
-
-**Leave running (daemons, e.g. in tmux or as launchd agents):**
-```bash
-python3 scripts/run_bot.py                       # live paper trader; retrains live models daily
-python3 scripts/run_engine.py --cycles 0 --workers 8   # numeric + genome search, gates & surfaces both
-```
-`run_engine` supersedes `optimize_loop` (it does the numeric search **and** the
-genome search, and now validates the best genomes through the gate). Run **one**
-of them, not both — they share state files. It prints a per-cycle heartbeat so
-you can see it working.
-
-**Run a second, independent book** (an experiment — its own config, state, and
-dashboard, never touching the main one) by pointing it at a separate state dir:
-```bash
-python3 scripts/run_bot.py --config config_experiment.yaml --state-dir state_experiment
-```
-Its dashboard is `state_experiment/dashboard.html`. The bundled
-`config_experiment.yaml` runs 15-minute mean-reversion (the one strategy that's
-been profitable live) across a basket of equity ETFs on a fresh $100k.
-
-Once the traded set has *converged* (engine_status shows a high population
-saturation / `⚠ spinning`, and the best genome stops rising), point the engine at
-the broad scan list instead — it keeps discovering on fresh, lower-noise symbols
-rather than idling on the exhausted five:
-```bash
-python3 scripts/run_engine.py --cycles 0 --universe    # genome search over config.yaml: universe
-```
-Universe symbols carry no `param_bounds`, so this runs the **genome (structure)
-search only** — the numeric param tuner needs a bounded space and is skipped for
-them. Qualified discoveries still land in `state/genome_proposals.jsonl` for the
-reviewer to ship; the live book changes only when a human (or the nightly
-reviewer) edits `config.yaml`.
-
-**Cron (periodic):**
-```cron
-45 20 * * * cd /path/to/FableBot && python3 scripts/rotate_universe.py --screen-top 12 >> logs/rotation.log 2>&1
-30 21 * * * /path/to/FableBot/scripts/nightly_review.sh >> /path/to/FableBot/logs/review.log 2>&1
-0 3 * * 0  cd /path/to/FableBot && { python3 scripts/train_ml.py; python3 scripts/train_rl.py; } >> logs/train.log 2>&1
-```
-
-**Check on it anytime (read-only):**
-```bash
-python3 scripts/engine_status.py     # is it learning? what's cleared the gate?
-python3 scripts/proposals.py         # the numeric pipeline + shipping slate
-python3 scripts/dashboard_all.py --open   # every book on one page
-```
-
-**Analysis & tuning tools (read-only evidence):**
-```bash
-python3 scripts/premature_stops.py             # did hard stops cut trades that came back?
-python3 scripts/stop_sweep.py --instrument BTC # grid the hard × trailing stop; recommend a width
-python3 scripts/stop_sweep.py --config config_experiment_adaptive.yaml --stops 2,3 --trails 3,4 --near 1,2,2.5   # tune the adaptive MR trail (all ETFs)
-python3 scripts/genome_insights.py             # what indicators/structures recur in the best genomes
-```
-
-Nothing above edits `config.yaml` or the live book — every pipeline only
-produces gated *evidence*. The **nightly reviewer** turns that evidence into
-human-gated draft PRs (≤1 change per instrument); you review and merge, and the
-bot adopts it on restart.
-
-The bot is **paper-trading only**: it fetches real market data and simulates
-fills, keeping state in `state/portfolio.json`. Wiring it to a real broker means
-implementing the `Broker` interface in `fablebot/portfolio.py` — and accepting
-the consequences.
-
-## Quick start
-
-```bash
-pip3 install -r requirements.txt
-
-# Run the test suite (synthetic data, no network needed)
-python3 -m pytest
-
-# Backtest a single instrument over recent history
-python3 scripts/backtest.py BTC --days 120
-
-# Run the live paper-trading loop, or fire a report on demand
-python3 scripts/run_bot.py
-python3 scripts/run_bot.py --once               # one cycle and exit
-python3 scripts/run_bot.py --report morning     # 7am-style briefing now
-python3 scripts/run_bot.py --report evening     # 9pm-style recap now
-
-# Performance digest from the journal
-python3 scripts/analyze.py --days 30
-
-# Continuous optimizer + proposal pipeline
-python3 scripts/optimize_loop.py                # all cores, throttled
-python3 scripts/optimize_loop.py --workers 4 --no-throttle
-python3 scripts/optimize_loop.py --instrument BTC
-python3 scripts/proposals.py                    # pipeline + funnel + shipping slate
-
-# Strategy engine (Phase 2)
-python3 scripts/run_engine.py --cycles 1        # optimizer + genome search, one cycle
-python3 scripts/evolve.py --generations 10      # evolutionary genome search
-python3 scripts/evolve.py --universe --screen-top 10  # scan the wider universe
-python3 scripts/train_ml.py --instrument BTC    # train + gate an ML signal model
-
-# Validation gate (what every proposed change must pass)
-python3 scripts/validate.py
-```
-
-## Configuration
-
-Everything lives in [`config.yaml`](config.yaml): instruments, strategy
-parameters, the risk budget, correlation groups, report times, and timezone.
-Each instrument also defines `param_bounds` — the search space the optimizer is
-allowed to explore. The optimizer only ever moves numbers *within* those
-bounds; it cannot touch the risk settings.
-
-Phase 2 adds three optional sections: `data` (which `OHLCVSource` and cache to
-fetch through), `universe` (a large, config-driven scan list for the genome
-search — add tickers without code changes), and `costs` (`friction_bps`, the
-commission + slippage applied during the search). An instrument may also carry a
-`genome` to run a composable-DSL strategy, or a `model` block
-(`{type: ml_gbt, ...}` / `{type: rl_qlearn, ...}`) that the live engine trains
-on deep history at startup and **re-trains daily** — so genomes, ML and RL all
-trade live, not just numeric params. The risk engine still owns every fill.
-
-## Project layout
-
-```
-fablebot/
-├── config.py         # config loading / dataclasses
-├── data.py           # OHLCV fetching (yfinance) + 4h resampling
-├── indicators.py     # ATR, EMA, z-score, Donchian channels
-├── risk.py           # ATR position sizing, hard stop, correlation filter
-├── portfolio.py      # positions, paper broker, trade log, persistence
-├── engine.py         # evaluation cycle + scheduler + shadow book
-├── journal.py        # append-only decision journal (JSONL)
-├── analytics.py      # digest: expectancy, stop quality, counterfactuals
-├── news.py           # Yahoo Finance headlines + high-impact flagging
-├── reports.py        # 7am briefing / 9pm recap builders
-├── notify.py         # console / file / webhook delivery
-├── backtest.py       # bar-by-bar simulator (+ optional transaction costs)
-├── optimizer.py      # parallel walk-forward search + hardened validation gate
-├── pipeline.py       # staged proposal store (append-only, audited)
-├── dsl.py            # composable strategy DSL: genomes + operators
-├── search.py         # genetic search + TPE + genome-aware gate
-├── ml.py             # gradient-boosted-tree signal models
-├── rl.py             # constrained Q-learning agent
-├── universe.py       # universe screening (liquidity)
-├── rotation.py       # P&L-aware live-book rotation policy (pure)
-├── dashboard.py      # read-only HTML dashboard (per-book + combined)
-└── strategies/
-    ├── base.py            # + current_trail_mult hook (constant / dynamic)
-    ├── mean_reversion.py  # + adaptive narrowing trail
-    ├── momentum_breakout.py
-    ├── trend_following.py
-    └── regime.py          # ADX switch: mean-revert in chop, momentum in trends
-
-scripts/
-├── run_bot.py          # live loop / on-demand reports (--state-dir for extra books)
-├── run_engine.py       # unified orchestrator (numeric + genome search, --universe)
-├── backtest.py         # single-instrument backtest
-├── analyze.py          # journal → performance digest
-├── proposals.py        # pipeline + funnel + shipping slate, status transitions
-├── validate.py         # tests + per-instrument backtests (the PR gate)
-├── engine_status.py    # is the search learning? what's cleared the gate?
-├── evolve.py           # evolutionary genome search (--universe)
-├── train_ml.py / train_rl.py   # train + gate ML / RL models
-├── rotate_universe.py  # P&L-aware live-book rotation recommendation
-├── dashboard.py / dashboard_all.py   # per-book + combined dashboards
-├── premature_stops.py  # were hard stops cutting trades that recovered?
-├── stop_sweep.py       # grid the hard × trailing (× adaptive) stop, recommend a width
-├── genome_insights.py  # cross-instrument: what recurs in the best genomes
-├── ingest_wrds.py      # stream a CRSP export → per-symbol adjusted CSVs
-├── position_flat.py / promote_when_flat.sh   # gate a config change on a position closing
-└── nightly_review.sh   # headless Claude Code review → draft PR
-
-config.yaml, config_experiment*.yaml   # the main book + experiment books
-prompts/reviewer.md     # the reviewer's constitution
-RISK_RULES.md           # the immutable risk constitution
-docs/learning-loop.md            # full design of the self-improvement loop
-docs/phase-2-learning-engine.md  # the strategy-engine brief
-docs/wrds-data.md                # using a WRDS/CRSP export for the search
-docs/PROJECT_OVERVIEW.md         # in-depth: everything built + next steps + testing phases
-```
-
-## Roadmap
-
-**Phase 2 — the strategy engine — is implemented.** The validation gate is
-hardened (deflated Sharpe, purged folds, embargoed held-out, raised trade
-floor, baseline-refresh fix); parameter tuning has become a composable strategy
-DSL with a guided/evolutionary search that learns from history; ML and RL signal
-models are in, all behind the same gate; trials run multi-core; the universe is
-config-driven with a screener; data sits behind a swappable cached source; and
-transaction costs are modelled in the search. The staged brief, statistical
-rationale and guardrails are in
-[`docs/phase-2-learning-engine.md`](docs/phase-2-learning-engine.md).
-
-Still on the back burner (by design — they need the engine above to justify the
-cost): a **paid market-data feed** (Polygon/Tiingo/Databento) for deep intraday
-*equity* history, and **options/futures**, which need contract/expiry/Greeks
-modelling and a rethink of ATR sizing — their own project, after equities /
-ETFs / crypto / continuous futures.
-
-## Disclaimer
-
-This is an educational paper-trading project. Nothing here is financial advice,
-and past performance of any strategy — simulated or otherwise — does not predict
-future results.
+This is an educational simulation project, not financial advice. Simulated or
+historical results do not predict future performance.

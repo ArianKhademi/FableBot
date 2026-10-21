@@ -3,6 +3,48 @@ import pytest
 from fablebot.risk import CorrelationFilter, size_position
 
 
+@pytest.mark.parametrize("risk", [0, -0.01, 0.010001, float("nan"), float("inf"), True, "0.01"])
+def test_risk_ceiling_and_invalid_budgets_rejected(risk):
+    from fablebot.config import AccountConfig
+
+    with pytest.raises(ValueError, match="risk_per_trade"):
+        AccountConfig(risk_per_trade=risk)
+    with pytest.raises(ValueError, match="risk_per_trade"):
+        size_position(100_000, risk, 100, 2, 2, "long")
+
+
+@pytest.mark.parametrize("field,value", [
+    ("equity", float("nan")), ("equity", float("inf")),
+    ("atr", float("inf")), ("atr_stop_mult", 0), ("atr_stop_mult", -1),
+    ("atr_stop_mult", float("nan")), ("entry_price", float("nan")),
+    ("contract_multiplier", 0), ("contract_multiplier", -5),
+    ("max_contracts", -1), ("max_contracts", 1.5),
+])
+def test_invalid_sizing_cannot_create_nonfinite_or_inverted_positions(field, value):
+    kwargs = dict(equity=100_000, risk_per_trade=0.01, entry_price=100,
+                  atr=2, atr_stop_mult=2, direction="long")
+    kwargs[field] = value
+    with pytest.raises(ValueError):
+        size_position(**kwargs)
+
+
+def test_custom_yaml_cannot_bypass_risk_ceiling(tmp_path):
+    from fablebot.config import load_config
+
+    path = tmp_path / "custom.yaml"
+    path.write_text("account:\n  risk_per_trade: 0.02\n")
+    with pytest.raises(ValueError, match="risk_per_trade"):
+        load_config(path)
+
+
+def test_all_bundled_configs_still_load():
+    from pathlib import Path
+    from fablebot.config import load_config
+
+    for path in Path(__file__).resolve().parents[1].glob("config*.yaml"):
+        assert 0 < load_config(path).account.risk_per_trade <= 0.01
+
+
 def test_atr_sizing_keeps_dollar_risk_constant():
     # Quiet gold day vs volatile bitcoin day: same dollars at risk
     gold = size_position(100_000, 0.01, 2000.0, atr=8.0, atr_stop_mult=3.0, direction="long")

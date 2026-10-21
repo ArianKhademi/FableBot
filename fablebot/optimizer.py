@@ -464,8 +464,8 @@ def validate_candidate(
     stay within PERTURB_TOLERANCE of its OWN Sharpe (and still beat the current
     params). An edge that only exists at exact parameter values is curve-fitting.
     Test 3 — held-out confirmation: on the embargoed holdout the search never
-    saw, the candidate must beat the current params. This is the gate selection
-    bias cannot game, because the data was never available to select on.
+    saw, the candidate must beat the current params. Repeated use of this tail
+    for confirmation can still introduce selection bias; see docs/validation.md.
     """
     folds_won = 0
     folds_valid = 0
@@ -520,6 +520,10 @@ def validate_candidate(
     else:
         holdout_ok = True  # no holdout supplied (e.g. unit tests of the in-sample gate)
 
+    holdout_label = (
+        f"held-out {holdout_candidate_sharpe:.3f} > current {holdout_current_sharpe:.3f}"
+        if holdout_checked else "held-out not checked"
+    )
     if not folds_ok:
         reason = (
             f"regime test failed: beat current params in {folds_won}/{folds_valid} folds "
@@ -541,8 +545,11 @@ def validate_candidate(
         reason = (
             f"won {folds_won}/{folds_valid} folds; jitter median {median_perturbed:.3f} "
             f"within {PERTURB_TOLERANCE:.0%} of own {candidate_oos:.3f}; "
-            f"held-out {holdout_candidate_sharpe:.3f} > current {holdout_current_sharpe:.3f}"
+            f"{holdout_label}"
         )
+
+    if not holdout_checked:
+        reason += "; held-out confirmation not checked (no holdout supplied)"
 
     return {
         "qualified": folds_ok and perturb_ok and holdout_ok,

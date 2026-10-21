@@ -442,8 +442,11 @@ def validate_genome(
     h_curr = curr_h[0] if curr_h else float("-inf")
 
     # deflated-Sharpe correction on the candidate's OOS return stream
+    # Preserve the legacy qualification rule, but distinguish a skipped check
+    # from a computed probability. The 1.0 sentinel alone is not evidence.
     dsr = 1.0
-    if cand_full is not None and n_trials >= 10:
+    dsr_checked = cand_full is not None and n_trials >= 10
+    if dsr_checked:
         dsr = deflated_sharpe_ratio(equity_returns(cand_full.oos_equity_curve), n_trials, sr_std_perbar)
 
     folds_ok = folds_valid >= 3 and folds_won >= _math.ceil(0.75 * folds_valid)
@@ -452,6 +455,9 @@ def validate_genome(
         cand_h is not None and curr_h is not None and cand_h[1] >= MIN_HOLDOUT_TRADES and h_cand > h_curr
     )
     dsr_ok = dsr >= DSR_THRESHOLD
+
+    dsr_label = f"{dsr:.3f}" if dsr_checked else "not checked"
+    holdout_label = f"held-out {h_cand:.3f} > {h_curr:.3f}" if holdout_df is not None else "held-out not checked"
 
     if not folds_ok:
         reason = f"regime test failed: beat current in {folds_won}/{folds_valid} folds"
@@ -464,10 +470,20 @@ def validate_genome(
     else:
         reason = (
             f"won {folds_won}/{folds_valid} folds; jitter stable; "
-            f"held-out {h_cand:.3f} > {h_curr:.3f}; DSR {dsr:.3f}"
+            f"{holdout_label}; DSR {dsr_label}"
         )
 
+    limitations = []
+    if not dsr_checked:
+        limitations.append("DSR not checked (requires a valid trial and at least 10 effective trials)")
+    if holdout_df is None:
+        limitations.append("held-out confirmation not checked (no holdout supplied)")
+    if limitations:
+        reason += "; " + "; ".join(limitations)
+
     return {
+        "deflated_sharpe_checked": dsr_checked,
+        "limitations": limitations,
         "qualified": folds_ok and perturb_ok and holdout_ok and dsr_ok,
         "folds_won": folds_won, "folds_valid": folds_valid,
         "candidate_oos_sharpe": candidate_oos, "baseline_oos_sharpe": baseline_oos,

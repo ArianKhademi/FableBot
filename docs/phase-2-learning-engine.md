@@ -1,3 +1,7 @@
+> Historical implementation brief. This records plans and observations from the original build;
+> it is not the current behavior contract. See [architecture](PROJECT_OVERVIEW.md) and
+> [validation limitations](validation.md) for the current implementation.
+
 # Phase 2 — From parameter tuning to a self-improving strategy engine
 
 > **Status: implemented.** Workstreams A–I below are all shipped behind tests
